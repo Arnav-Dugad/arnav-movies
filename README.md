@@ -18,7 +18,7 @@ A glassy, Apple-style streaming site for **free, legal** classic cinema and TV. 
 ## Run locally
 
 ```bash
-npx wrangler pages dev public
+npx wrangler dev
 ```
 
 ## Add films to the curated catalog
@@ -35,9 +35,13 @@ Every provider in `public/js/api.js` returns the same item shape (`key, kind, id
 
 ## Deploy
 
+Hosted free on Cloudflare Workers static assets: **https://lumen-cinema.arnavrival12.workers.dev**
+
 ```bash
-npx wrangler pages deploy public --project-name lumen-cinema
+npx wrangler deploy
 ```
+
+`worker.js` serves the static files and falls back to the app shell for client-side routes, including Archive IDs that contain dots.
 
 ## Legal
 

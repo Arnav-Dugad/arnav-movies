@@ -143,7 +143,7 @@ export async function home(ctx) {
   ).catch(() => fill(ctx, '[data-slot="tonight"]', ''));
 
   api.iaSearch({ rows: 24 }).then(({ items }) =>
-    fill(ctx, '[data-slot="vault"]', row({ title: 'Most Streamed in the Vault', sub: '28,000+ public-domain films', more: '/movies?tab=vault', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }))
+    fill(ctx, '[data-slot="vault"]', row({ title: 'Most Streamed in the Vault', sub: '28,000+ films on the Internet Archive', more: '/movies?tab=vault', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }))
   ).catch(() => fill(ctx, '[data-slot="vault"]', ''));
 
   api.iaSearch({ collection: 'classic_tv', rows: 24 }).then(({ items }) =>
