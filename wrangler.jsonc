@@ -1,5 +1,6 @@
 {
-  // Static site on Cloudflare Workers (free plan). `npx wrangler deploy` publishes ./public.
+  // Cloudflare Workers (free plan): static site in ./public plus a small API in worker.js.
+  // Secrets: `npx wrangler secret put TMDB_KEY` (optional: OPENSUBTITLES_KEY).
   "name": "lumen-cinema",
   "main": "worker.js",
   "compatibility_date": "2026-10-01",
@@ -7,6 +8,12 @@
     "directory": "./public",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "html_handling": "auto-trailing-slash"
-  }
+    "html_handling": "auto-trailing-slash",
+    "run_worker_first": ["/api/*", "/__scheduled"]
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "lumen-health", "database_id": "478774cd-836d-420f-8909-f0af5241da91" }
+  ],
+  "triggers": { "crons": ["*/30 * * * *"] },
+  "observability": { "enabled": true }
 }

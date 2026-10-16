@@ -3,7 +3,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()
   X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; media-src https://archive.org https://*.archive.org; connect-src 'self' https://archive.org https://*.archive.org https://api.tvmaze.com https://en.wikipedia.org https://*.wikimedia.org https://static.tvmaze.com; frame-ancestors 'none'; base-uri 'self'; manifest-src 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: https://archive.org https://*.archive.org; connect-src 'self' https://archive.org https://*.archive.org https://api.tvmaze.com https://en.wikipedia.org https://*.wikimedia.org https://query.wikidata.org https://www.wikidata.org https://graphql.anilist.co https://image.tmdb.org https://static.tvmaze.com https://www.gstatic.com; frame-src https://www.youtube-nocookie.com https://www.youtube.com; frame-ancestors 'none'; base-uri 'self'; manifest-src 'self'
 
 /js/*
   Cache-Control: public, max-age=0, must-revalidate
@@ -11,7 +11,10 @@
 /styles.css
   Cache-Control: public, max-age=0, must-revalidate
 
-/data/*
+/data/catalog.json
+  Cache-Control: public, max-age=0, must-revalidate
+
+/data/f/*
   Cache-Control: public, max-age=3600, stale-while-revalidate=86400
 
 /*.png

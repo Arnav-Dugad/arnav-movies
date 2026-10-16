@@ -37,7 +37,13 @@ const snapshot = (item) => ({
   genres: (item.genres || []).slice(0, 3),
   href: item.href,
   file: item.file,
+  preview: item.preview,
+  length: item.length,
+  backdrop: item.backdrop,
+  backdropSm: item.backdropSm,
+  logo: item.logo,
   thumbOnly: item.thumbOnly,
+  playable: item.playable,
 });
 
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -62,6 +68,7 @@ export const store = {
   },
 
   progress: (key) => state.progress[key] || null,
+  allProgress: () => ({ ...state.progress }),
   setProgress(item, t, d) {
     if (!d || !isFinite(d)) return;
     state.progress[item.key] = { t, d, at: Date.now(), item: snapshot(item) };

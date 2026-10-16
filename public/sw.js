@@ -1,6 +1,9 @@
-// Offline shell + fast repeat visits. Video streams are never cached.
-const VERSION = 'lumen-v1';
-const SHELL = ['/', '/styles.css', '/js/app.js', '/js/api.js', '/js/store.js', '/js/ui.js', '/js/views.js', '/js/player.js', '/js/search.js', '/data/catalog.json', '/icon.svg', '/manifest.webmanifest'];
+// Offline shell + fast repeat visits. Video streams and API calls are never cached here.
+const VERSION = 'lumen-v2';
+const SHELL = [
+  '/', '/styles.css', '/data/catalog.json?v=2', '/icon.svg', '/manifest.webmanifest',
+  ...['app', 'api', 'store', 'ui', 'views', 'tv', 'people', 'status', 'player', 'search', 'recs', 'gestures', 'cast'].map((m) => `/js/${m}.js`),
+];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -8,7 +11,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => !k.startsWith(VERSION)).map((k) => caches.delete(k)))).then(() => self.clients.claim())
   );
 });
 
@@ -23,8 +26,8 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Same-origin assets: network first so deploys show up immediately, cache as offline fallback.
-  if (url.origin === location.origin) {
+  // Same-origin assets (not the API): network first so deploys show up immediately, cache as offline fallback.
+  if (url.origin === location.origin && !url.pathname.startsWith('/api/')) {
     e.respondWith(
       caches.open(VERSION).then((cache) =>
         fetch(request)
@@ -38,8 +41,8 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Posters: cache-first (they never change).
-  if (/upload\.wikimedia\.org|thumb\.wikimedia\.org|static\.tvmaze\.com/.test(url.hostname) && request.destination === 'image') {
+  // Posters and stills: cache-first (they never change).
+  if (/image\.tmdb\.org|upload\.wikimedia\.org|thumb\.wikimedia\.org|static\.tvmaze\.com|s4\.anilist\.co/.test(url.hostname) && request.destination === 'image') {
     e.respondWith(
       caches.open(VERSION + '-img').then(async (cache) => {
         const cached = await cache.match(request);

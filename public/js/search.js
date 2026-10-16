@@ -1,12 +1,12 @@
 // ⌘K search palette: instant local matches from the curated catalog,
 // then live results from the Internet Archive and TVMaze.
-import { catalog, iaSearchText, searchShows } from './api.js';
+import { catalog, iaSearchText, searchShows, animeSearch } from './api.js';
 import { esc, icon } from './ui.js';
 
 let root, input, results, items = [], selected = 0, timer, seq = 0;
 let navigate = () => {};
 
-const SUGGEST = ['Hitchcock', 'Nosferatu', 'Film noir', 'Buster Keaton', 'Breaking Bad', 'The Office', 'Severance', 'Twilight Zone'];
+const SUGGEST = ['Hitchcock', 'Chaplin', 'Film noir', 'Buster Keaton', 'Popeye', 'Breaking Bad', 'Severance', 'Frieren', 'One Piece'];
 
 export function initSearch(nav) {
   navigate = nav;
@@ -112,18 +112,20 @@ async function run() {
     render([{ label: 'Try', suggest: true }, { label: 'Trending free classics', list: items }], q);
     return;
   }
-  const local = films.map((f) => [f, score(f, q)]).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([f]) => f);
+  const local = films.map((f) => [f, score(f, q)]).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([f]) => f);
   render([{ label: 'Free to watch', list: local }, { label: 'Searching…', loading: true }], q);
   if (q.length < 2) return;
-  const [ia, tv] = await Promise.allSettled([iaSearchText(q, 10), searchShows(q)]);
+  const [ia, tv, an] = await Promise.allSettled([iaSearchText(q, 10), searchShows(q), animeSearch(q)]);
   if (my !== seq) return;
   const seen = new Set(local.map((f) => f.id));
   const vault = (ia.value || []).filter((x) => !seen.has(x.id)).slice(0, 8);
   const shows = (tv.value || []).slice(0, 8);
+  const anime = (an.value || []).slice(0, 6);
   render([
     { label: 'Free to watch', list: local },
     { label: 'From the Internet Archive', list: vault },
     { label: 'TV shows', list: shows },
+    { label: 'Anime', list: anime },
   ], q);
 }
 
@@ -140,13 +142,13 @@ function render(groups, q) {
         g.list
           .map((it) => {
             const idx = i++;
-            const sub = it.kind === 'show'
-              ? [it.year, it.network, it.genres[0]].filter(Boolean).join(' · ')
+            const sub = it.kind === 'show' || it.kind === 'anime'
+              ? [it.year, it.network || it.format, it.genres?.[0]].filter(Boolean).join(' · ')
               : [it.year, it.director?.[0], it.genres?.[0]].filter(Boolean).join(' · ');
             return `<a class="result" role="option" href="${esc(it.href)}" data-idx="${idx}">
               <div class="result__img">${it.poster ? `<img src="${esc(it.poster)}" alt="" loading="lazy">` : ''}</div>
               <div><div class="result__title">${highlight(it.title, q)}</div><div class="result__sub">${esc(sub)}</div></div>
-              ${it.playable ? '<span class="badge badge--free">Free</span>' : `<span class="badge">${it.kind === 'show' ? 'TV' : 'Info'}</span>`}
+              ${it.playable ? '<span class="badge badge--free">Free</span>' : `<span class="badge">${it.kind === 'show' ? 'TV' : it.kind === 'anime' ? 'Anime' : 'Info'}</span>`}
             </a>`;
           })
           .join('');
