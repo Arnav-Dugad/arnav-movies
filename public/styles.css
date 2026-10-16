@@ -297,11 +297,14 @@ main { min-height: 100svh; outline: none; }
   overflow: hidden;
   background: linear-gradient(135deg, #1c1c22, #121216);
   box-shadow: 0 0 0 .5px var(--hairline), 0 18px 40px -22px rgba(0,0,0,.9);
-  transform: translateZ(0);
+  isolation: isolate;
   transition: transform .5s var(--ease), box-shadow .5s var(--ease);
 }
-.card__media img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .6s var(--ease), transform .8s var(--ease); }
+/* Images are positioned so they paint above the absolutely-positioned title fallback (in-flow
+   content paints beneath positioned siblings regardless of DOM order). */
+.card__media > img:not(.card__logo) { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .6s var(--ease), transform .8s var(--ease); }
 .card__media img.is-loaded { opacity: 1; }
+.card__media::after { z-index: 3; }
 .card__media::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,.16) 50%, transparent 65%); background-size: 250% 100%; background-position: 120% 0; opacity: 0; transition: opacity .3s, background-position .9s var(--ease); pointer-events: none; }
 .card:hover .card__media, .card:focus-visible .card__media { transform: translateY(-6px) scale(1.035); box-shadow: 0 0 0 .5px var(--hairline-strong), 0 30px 60px -24px rgba(0,0,0,.95); }
 .card:hover .card__media::after { opacity: 1; background-position: -40% 0; }
@@ -309,18 +312,18 @@ main { min-height: 100svh; outline: none; }
 .card:active .card__media { transform: scale(.97); }
 .card__fallback { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; font-weight: 700; font-size: 17px; letter-spacing: -0.02em; color: var(--text-2);
   background: radial-gradient(120% 80% at 0% 0%, rgba(var(--amb-1), .25), transparent), radial-gradient(120% 80% at 100% 100%, rgba(var(--amb-2), .25), transparent), #141418; }
-.card__badge { position: absolute; top: 10px; left: 10px; z-index: 2; }
-.card__play { position: absolute; right: 10px; bottom: 10px; z-index: 2; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.92); color: #000; opacity: 0; transform: scale(.8) translateY(6px); transition: all .35s var(--spring); }
+.card__badge { position: absolute; top: 10px; left: 10px; z-index: 4; }
+.card__play { position: absolute; right: 10px; bottom: 10px; z-index: 4; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.92); color: #000; opacity: 0; transform: scale(.8) translateY(6px); transition: all .35s var(--spring); }
 .card__play svg { width: 16px; height: 16px; margin-left: 2px; }
 .card:hover .card__play { opacity: 1; transform: none; }
 .card__meta { padding: 10px 4px 0; }
 .card__title { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card__sub { font-size: 12.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card--wide .card__media { aspect-ratio: 16 / 9; }
-.card__progress { position: absolute; left: 12px; right: 12px; bottom: 12px; height: 4px; border-radius: 4px; background: rgba(255,255,255,.25); overflow: hidden; z-index: 2; }
+.card__progress { position: absolute; left: 12px; right: 12px; bottom: 12px; height: 4px; border-radius: 4px; background: rgba(255,255,255,.25); overflow: hidden; z-index: 4; }
 .card__progress i { display: block; height: 100%; background: var(--accent-grad); border-radius: 4px; }
-.card--wide .card__media::before { content: ""; position: absolute; inset: 0; z-index: 1; background: linear-gradient(0deg, rgba(0,0,0,.65), transparent 55%); pointer-events: none; }
-.card__overlay-title { position: absolute; z-index: 2; left: 14px; right: 14px; bottom: 24px; font-weight: 700; letter-spacing: -0.02em; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+.card--wide .card__media::before { content: ""; position: absolute; inset: 0; z-index: 2; background: linear-gradient(0deg, rgba(0,0,0,.65), transparent 55%); pointer-events: none; }
+.card__overlay-title { position: absolute; z-index: 3; left: 14px; right: 14px; bottom: 24px; font-weight: 700; letter-spacing: -0.02em; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
 .card--rank { display: grid; grid-template-columns: 110px 1fr; align-items: end; }
 .card--rank .rank { font-size: 168px; line-height: .78; font-weight: 900; letter-spacing: -0.08em; color: transparent; -webkit-text-stroke: 2px rgba(255,255,255,.28); margin-right: -18px; user-select: none; transition: -webkit-text-stroke-color .3s; }
 .card--rank:hover .rank { -webkit-text-stroke-color: var(--accent); }
@@ -671,7 +674,7 @@ main { min-height: 100svh; outline: none; }
 /* cards: hover preview, logo art, taller rank numerals */
 .card__preview { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .7s var(--ease); pointer-events: none; background: #000; }
 .card__preview.is-on { opacity: 1; }
-.card__media img.card__logo { position: absolute; z-index: 2; left: 14px; bottom: 22px; width: auto; height: auto; max-width: 62%; max-height: 42%; object-fit: contain; object-position: left bottom; filter: drop-shadow(0 4px 14px rgba(0,0,0,.7)); }
+.card__media img.card__logo { position: absolute; z-index: 3; left: 14px; bottom: 22px; width: auto; height: auto; max-width: 62%; max-height: 42%; object-fit: contain; object-position: left bottom; filter: drop-shadow(0 4px 14px rgba(0,0,0,.7)); }
 .card--wide .card__badge, .card--wide .card__play { z-index: 3; }
 .card--rank .rank { font-size: 210px; background: linear-gradient(180deg, rgba(255,255,255,.92) 0%, rgba(255,255,255,.18) 62%, rgba(255,255,255,0) 92%); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-stroke: 1.5px rgba(255,255,255,.32); will-change: transform; transition: -webkit-text-stroke-color .3s, filter .3s; }
 .card--rank:hover .rank { -webkit-text-stroke-color: var(--accent); filter: drop-shadow(0 0 22px rgba(255,179,64,.35)); }
