@@ -26,3 +26,10 @@ CREATE TABLE IF NOT EXISTS meta (
   k TEXT PRIMARY KEY,
   v TEXT
 );
+
+-- Subtitle downloads and AI translations, kept so quotas are spent once per line.
+CREATE TABLE IF NOT EXISTS subs (
+  k TEXT PRIMARY KEY,
+  body TEXT NOT NULL,
+  ts INTEGER NOT NULL
+);

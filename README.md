@@ -14,6 +14,22 @@ A glassy, Apple-style streaming site for **free, legal** classic cinema, plus di
 - **Feel:** posters that morph into the detail page, muted trailers on hover, hover-to-preview clips, parallax rank numerals, spring-physics sheets, haptics and a shimmer splash.
 - **Reliability:** the player reports stream failures and recoveries to a Worker + D1 database. A cron job re-checks every catalog file every 30 minutes, dead files are skipped automatically, and `/status` shows the dashboard.
 
+## New in v3
+
+- **Subtitles in 40+ languages:** OpenSubtitles (human-made, cached in D1), plus live AI translation of the English captions with Workers AI. Indian languages use IndicTrans2; the rest use Llama 3.1. Translation starts at the chunk you're watching. Subtitle size, font (including Lexend and Atkinson Hyperlegible, which are easier to read for people with dyslexia), background and colour are all saved.
+- **Smart resume:** rewinds 10 seconds and shows a "Previously" card with the last scenes and lines of dialogue.
+- **Old-print restoration:** de-flicker (temporal frame blending) and Steady (also crops the gate-weave at the frame edges), drawn on a canvas.
+- **App-icon launch:** the player grows out of the poster you tapped, and shrinks back into it on close.
+- **Classic TV series:** 26 series grouped into real seasons and episodes, matched to TMDB. Each episode's progress is saved, with Resume S·E and autoplay of the next episode.
+- **Shorts:** a vertical swipe feed of 35-second clips from cartoons and silent shorts.
+- **Hover cards** on desktop: a muted trailer, preview clip or slideshow, plus scores and quick actions, including Not interested.
+- **Ken Burns slideshows** on title pages for films without a trailer.
+- **Best-scene card art:** picked from Archive scene frames for the ~570 films without a TMDB backdrop.
+- **Seasonal home pages** (Halloween, Christmas, Valentine's Day). Preview with `?season=halloween|holidays|valentines`.
+- **Collections:** Chaplin, Keaton, Lloyd, Cult Classics, Halloween Frights and Holiday Classics.
+- **Release dates and certificates** for your country, falling back to the U.S.
+- **Smarter recommendations:** titles you abandoned or dismissed count against their genres, plus a "Because you liked {actor}" row.
+
 ## Data sources (all free)
 
 | Source | Used for |
@@ -30,6 +46,8 @@ A glassy, Apple-style streaming site for **free, legal** classic cinema, plus di
 ```bash
 echo "TMDB_KEY=your_key" > .dev.vars                 # free key from themoviedb.org
 python scripts/build-catalog.py                       # builds public/data (about 15 min first run, cached afterwards)
+python scripts/build-stills.py && python scripts/compress-stills.py && python scripts/split_catalog.py   # best-scene art
+python scripts/build-tv.py                            # classic TV series and episode guides
 npx wrangler d1 execute lumen-health --local --file schema.sql
 npx wrangler dev                                      # http://localhost:8787
 ```
@@ -38,7 +56,7 @@ npx wrangler dev                                      # http://localhost:8787
 
 ```bash
 npx wrangler secret put TMDB_KEY
-npx wrangler secret put OPENSUBTITLES_KEY            # optional; enables OpenSubtitles in the player
+npx wrangler secret put OPENSUBTITLES_KEY            # enables OpenSubtitles languages in the player
 npx wrangler d1 execute lumen-health --remote --file schema.sql
 npx wrangler deploy
 ```

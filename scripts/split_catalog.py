@@ -35,6 +35,10 @@ def split():
         os.makedirs(os.path.dirname(FULL), exist_ok=True)
         shutil.copyfile(src, FULL)
 
+    # Best-scene stills picked by scripts/build-stills.py (card art for films without a TMDB backdrop).
+    stills_path = os.path.join(OUT, "stills", "index.json")
+    stills = json.load(open(stills_path, encoding="utf-8")) if os.path.exists(stills_path) else {}
+
     shard_dir = os.path.join(OUT, "f")
     shutil.rmtree(shard_dir, ignore_errors=True)
     os.makedirs(shard_dir)
@@ -55,12 +59,16 @@ def split():
             "director": f.get("director", []),
             "cast": [{"n": c["n"], **({"q": c["q"]} if c.get("q") else {})} for c in f.get("cast", [])[:4]],
             "rating": f.get("rating", {}), "votes": f.get("votes", 0), "imdb": f.get("imdb"), "tmdb": f.get("tmdb"),
+            "still": stills.get(f["id"], {}).get("best"),
+            "stlo": 1 if stills.get(f["id"], {}).get("lo") else None,  # only a low-res frame exists
         }
         if s != slug(f["id"]):
             entry["s"] = s  # only stored on a collision; the client derives the slug otherwise
         lean.append({k: v for k, v in entry.items() if v not in (None, "", [], {})})
         with open(os.path.join(shard_dir, s + ".json"), "w", encoding="utf-8") as fh:
-            json.dump({k: f.get(k) for k in ("overview", "tagline", "cast", "country", "language", "wiki", "qid")}, fh, ensure_ascii=False, separators=(",", ":"))
+            detail = {k: f.get(k) for k in ("overview", "tagline", "cast", "country", "language", "wiki", "qid", "rel", "backdrops")}
+            detail["stills"] = stills.get(f["id"], {}).get("kb", [])
+            json.dump({k: v for k, v in detail.items() if v not in (None, "", [], {})}, fh, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(OUT, "catalog.json"), "w", encoding="utf-8") as fh:
         json.dump({"generated": full.get("generated"), "films": lean}, fh, ensure_ascii=False, separators=(",", ":"))
     size = os.path.getsize(os.path.join(OUT, "catalog.json"))

@@ -107,15 +107,23 @@ export function posterCard(item, { badge = true } = {}) {
 export function wideCard(item, progress) {
   const pct = progress ? Math.min(100, (progress.t / progress.d) * 100) : 0;
   const left = progress ? Math.max(1, Math.round((progress.d - progress.t) / 60)) : 0;
-  const art = item.backdropSm || item.backdrop || item.posterHd || item.poster;
-  return `<a class="card card--wide" href="${esc(item.href)}" data-key="${esc(item.key)}" ${progress ? `data-play="${esc(item.id)}"` : ''} ${previewAttr(item)}>
+  const ep = item.kind === 'episode';
+  const art = ep ? item.backdropSm || item.still || item.backdrop || item.posterHd : item.backdropSm || item.backdrop || item.posterHd || item.poster;
+  const scene = !item.backdrop && item.still && art === item.still && item.stillLow; // low-res best scene: framed look
+  const label = ep ? item.seriesTitle || item.title : item.title;
+  const epTag = ep && item.s && item.e ? `S${item.s} · E${item.e}` : '';
+  const sub = progress
+    ? [epTag, ep ? item.title : '', `${left} min left`].filter(Boolean).join(' · ')
+    : [item.year, item.genres?.[0]].filter(Boolean).join(' · ');
+  return `<a class="card card--wide ${scene ? 'card--scene' : ''}" href="${esc(item.href)}" data-key="${esc(item.key)}" ${progress ? `data-play="${esc(item.key)}"` : ''} ${previewAttr(item)}>
     <div class="card__media">
       ${fallback(item)}
-      ${img(art, item.title)}
-      ${item.logo ? `<img class="card__logo" src="${esc(item.logo)}" alt="" loading="lazy">` : `<div class="card__overlay-title">${esc(item.title)}</div>`}
+      ${img(art, label)}
+      ${scene && item.poster ? `<img class="card__inset" src="${esc(item.poster)}" alt="" loading="lazy">` : ''}
+      ${item.logo && !ep ? `<img class="card__logo" src="${esc(item.logo)}" alt="" loading="lazy">` : `<div class="card__overlay-title">${esc(label)}</div>`}
       ${progress ? `<div class="card__progress"><i style="width:${pct.toFixed(1)}%"></i></div>` : ''}
     </div>
-    <div class="card__meta"><div class="card__sub">${progress ? `${left} min left` : esc([item.year, item.genres?.[0]].filter(Boolean).join(' · '))}</div></div>
+    <div class="card__meta"><div class="card__sub">${esc(sub)}</div></div>
   </a>`;
 }
 
@@ -216,6 +224,27 @@ export function initPreviews() {
     if (card && !card.contains(e.relatedTarget)) stop();
   });
   document.addEventListener('click', stop, true);
+}
+
+/* ------------------------------------------------------------- Ken Burns */
+/** Cross-fading slow-pan slideshow. Returns a stop function. */
+export function kenBurns(container, urls, { interval = 6500 } = {}) {
+  const list = [...new Set((urls || []).filter(Boolean))].slice(0, 8);
+  if (list.length < 2 || matchMedia('(prefers-reduced-motion: reduce)').matches) return () => {};
+  const drift = () => `--kx:${(Math.random() * 6 - 3).toFixed(2)}%;--ky:${(Math.random() * 4 - 2).toFixed(2)}%;--ko:${Math.random() > 0.5 ? 'left' : 'right'} center`;
+  container.classList.add('kb');
+  container.innerHTML = list.map((u, i) => `<img class="kb__img ${i === 0 ? 'is-on' : ''} ${u.startsWith('/data/stills') ? 'kb__img--soft' : ''}" src="${esc(u)}" alt="" style="${drift()}" ${i ? 'loading="lazy"' : ''}>`).join('');
+  const imgs = [...container.children];
+  let i = 0;
+  const t = setInterval(() => {
+    if (!container.isConnected) return clearInterval(t);
+    const prev = imgs[i];
+    i = (i + 1) % imgs.length;
+    imgs[i].setAttribute('style', drift());
+    imgs[i].classList.add('is-on');
+    setTimeout(() => prev.classList.remove('is-on'), 1600);
+  }, interval);
+  return () => clearInterval(t);
 }
 
 /* ---------------------------------------------------------------- trailers */

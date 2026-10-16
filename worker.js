@@ -2,7 +2,9 @@
 //   /api/tmdb/*      cached TMDB proxy (key stays server-side)
 //   /api/geo         viewer country from Cloudflare
 //   /api/subs/ia     Internet Archive .srt -> WebVTT (Archive storage nodes send no CORS headers)
-//   /api/subs/os     OpenSubtitles -> WebVTT (enabled when OPENSUBTITLES_KEY is set)
+//   /api/subs/os     OpenSubtitles -> WebVTT, persisted in D1 (enabled when OPENSUBTITLES_KEY is set)
+//   /api/subs/langs  languages OpenSubtitles has for a film
+//   /api/subs/translate  Workers AI translation of caption chunks, persisted in D1
 //   /api/report      playback events from the player (stream failures, recoveries)
 //   /api/health      stream-health dashboard data; /api/health/dead feeds the player
 //   scheduled()      checks every catalog file on a rolling basis and records dead streams
@@ -84,23 +86,63 @@ async function api(request, url, env, ctx) {
   if (path === 'subs/os') {
     if (!env.OPENSUBTITLES_KEY) return json({ enabled: false }, 404);
     const imdb = (url.searchParams.get('imdb') || '').replace(/^tt/, '');
-    const lang = (url.searchParams.get('lang') || 'en').slice(0, 5);
-    if (!/^\d+$/.test(imdb)) return json({ error: 'bad request' }, 400);
-    return cached(request, ctx, 30 * 86400, async () => {
-      const headers = { 'Api-Key': env.OPENSUBTITLES_KEY, 'User-Agent': 'Lumen v1.0', Accept: 'application/json' };
-      const s = await fetch(`https://api.opensubtitles.com/api/v1/subtitles?imdb_id=${imdb}&languages=${lang}&order_by=download_count`, { headers });
-      const file = (await s.json()).data?.[0]?.attributes?.files?.[0]?.file_id;
-      if (!file) return json({ error: 'none' }, 404);
-      const d = await fetch('https://api.opensubtitles.com/api/v1/download', {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: file, sub_format: 'webvtt' }),
-      });
-      const link = (await d.json()).link;
-      if (!link) return json({ error: 'quota' }, 429);
-      const text = await (await fetch(link)).text();
-      return vtt(text.startsWith('WEBVTT') ? text : srtToVtt(text));
+    const lang = (url.searchParams.get('lang') || 'en').toLowerCase().slice(0, 5);
+    if (!/^\d+$/.test(imdb) || !/^[a-z]{2}(-[a-z]{2})?$/.test(lang)) return json({ error: 'bad request' }, 400);
+    // D1 keeps downloads across all of Cloudflare's data centres, so the daily OpenSubtitles quota lasts.
+    const key = `os:${imdb}:${lang}`;
+    const hit = await d1Sub(env, key);
+    if (hit) return vtt(hit);
+    const headers = osHeaders(env);
+    const s = await fetch(`https://api.opensubtitles.com/api/v1/subtitles?imdb_id=${imdb}&languages=${lang}&order_by=download_count`, { headers });
+    const file = (await s.json()).data?.[0]?.attributes?.files?.[0]?.file_id;
+    if (!file) return json({ error: 'none' }, 404);
+    const d = await fetch('https://api.opensubtitles.com/api/v1/download', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: file, sub_format: 'webvtt' }),
     });
+    const link = (await d.json()).link;
+    if (!link) return json({ error: 'quota' }, 429);
+    const raw = await (await fetch(link)).text();
+    const text = raw.startsWith('WEBVTT') ? raw : srtToVtt(raw);
+    ctx.waitUntil(d1PutSub(env, key, text));
+    return vtt(text);
+  }
+
+  if (path === 'subs/langs') {
+    // Which languages OpenSubtitles has for a film (one search call, cached for a week).
+    if (!env.OPENSUBTITLES_KEY) return json([], 200, 3600);
+    const imdb = (url.searchParams.get('imdb') || '').replace(/^tt/, '');
+    if (!/^\d+$/.test(imdb)) return json({ error: 'bad request' }, 400);
+    return cached(request, ctx, 7 * 86400, async () => {
+      const r = await fetch(`https://api.opensubtitles.com/api/v1/subtitles?imdb_id=${imdb}&order_by=download_count`, { headers: osHeaders(env) });
+      const data = (await r.json().catch(() => ({}))).data || [];
+      const counts = {};
+      for (const x of data) {
+        const l = x.attributes?.language;
+        if (l) counts[l] = (counts[l] || 0) + (x.attributes.download_count || 1);
+      }
+      return json(Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([l]) => l), 200, 7 * 86400);
+    });
+  }
+
+  if (path === 'subs/translate' && request.method === 'POST') {
+    // Translates one chunk of English captions with Workers AI; chunks are cached forever in D1,
+    // so each line of each film is only ever translated once.
+    if (!env.AI || !env.DB) return json({ error: 'not configured' }, 503);
+    const body = await request.json().catch(() => null);
+    const lines = body?.lines;
+    const lang = String(body?.lang || '');
+    const src = String(body?.src || '');
+    if (!Array.isArray(lines) || !lines.length || lines.length > 60 || lines.some((l) => typeof l !== 'string' || l.length > 300)) return json({ error: 'bad lines' }, 400);
+    if (!LANGS[lang] || !/^(ia|os):[\w.\-:/]{1,240}$/.test(src) || !Number.isInteger(body.chunk) || body.chunk < 0 || body.chunk > 5000) return json({ error: 'bad request' }, 400);
+    const key = `tr:${src}:${lang}:${body.chunk}:${await shortHash(lines.join('\n'))}`;
+    const hit = await d1Sub(env, key);
+    if (hit) return json(JSON.parse(hit));
+    if (!(await aiBudget(env))) return json({ error: 'daily translation budget used up' }, 429);
+    const out = await translate(env, lines, lang);
+    if (out) ctx.waitUntil(d1PutSub(env, key, JSON.stringify(out)));
+    return out ? json(out) : json({ error: 'translation failed' }, 502);
   }
 
   if (path === 'report' && request.method === 'POST') {
@@ -151,6 +193,74 @@ async function api(request, url, env, ctx) {
   }
 
   return json({ error: 'not found' }, 404);
+}
+
+
+/* ------------------------------------------------------------- subtitles */
+const osHeaders = (env) => ({ 'Api-Key': env.OPENSUBTITLES_KEY, 'User-Agent': 'Lumen v1.0', Accept: 'application/json' });
+
+async function d1Sub(env, key) {
+  if (!env.DB) return null;
+  const row = await env.DB.prepare('SELECT body FROM subs WHERE k = ?').bind(key).first().catch(() => null);
+  return row?.body || null;
+}
+function d1PutSub(env, key, body) {
+  if (!env.DB) return Promise.resolve();
+  return env.DB.prepare('INSERT OR REPLACE INTO subs (k, body, ts) VALUES (?, ?, ?)').bind(key, body, Date.now()).run().catch(() => {});
+}
+
+async function shortHash(text) {
+  const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].slice(0, 6).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Free plan: 10,000 neurons/day. Cap AI calls so the whole site stays inside it.
+async function aiBudget(env, cap = 400) {
+  const day = 'ai:' + new Date().toISOString().slice(0, 10);
+  const row = await env.DB.prepare("INSERT INTO meta (k, v) VALUES (?, '1') ON CONFLICT(k) DO UPDATE SET v = CAST(v AS INTEGER) + 1 RETURNING v").bind(day).first();
+  return Number(row?.v || 0) <= cap;
+}
+
+// Target languages: IndicTrans2 for Indian languages (far better than general models), Llama for the rest.
+const LANGS = {
+  es: { name: 'Spanish' }, fr: { name: 'French' }, de: { name: 'German' }, it: { name: 'Italian' }, pt: { name: 'Portuguese' },
+  nl: { name: 'Dutch' }, ru: { name: 'Russian' }, tr: { name: 'Turkish' }, ar: { name: 'Arabic' }, ja: { name: 'Japanese' },
+  ko: { name: 'Korean' }, zh: { name: 'Chinese (Simplified)' }, id: { name: 'Indonesian' }, pl: { name: 'Polish' },
+  hi: { name: 'Hindi', indic: 'hin_Deva' }, bn: { name: 'Bengali', indic: 'ben_Beng' }, ta: { name: 'Tamil', indic: 'tam_Taml' },
+  te: { name: 'Telugu', indic: 'tel_Telu' }, mr: { name: 'Marathi', indic: 'mar_Deva' }, kn: { name: 'Kannada', indic: 'kan_Knda' },
+  ml: { name: 'Malayalam', indic: 'mal_Mlym' }, gu: { name: 'Gujarati', indic: 'guj_Gujr' }, pa: { name: 'Punjabi', indic: 'pan_Guru' },
+  ur: { name: 'Urdu', indic: 'urd_Arab' },
+};
+
+async function translate(env, lines, lang) {
+  const target = LANGS[lang];
+  try {
+    if (target.indic) {
+      const r = await env.AI.run('@cf/ai4bharat/indictrans2-en-indic-1B', { text: lines, target_language: target.indic });
+      const t = r?.translations;
+      if (Array.isArray(t) && t.length === lines.length) return t.map(String);
+    } else {
+      const r = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+        messages: [
+          { role: 'system', content: `You translate film subtitles from English to ${target.name}. Keep each line short and natural and keep names unchanged. Reply with ONLY a JSON array of exactly ${lines.length} strings, one per input line, in the same order.` },
+          { role: 'user', content: JSON.stringify(lines) },
+        ],
+        max_tokens: 2048,
+        temperature: 0.2,
+      });
+      const text = typeof r?.response === 'string' ? r.response : JSON.stringify(r?.response ?? '');
+      const arr = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1));
+      if (Array.isArray(arr) && arr.length === lines.length) return arr.map(String);
+    }
+  } catch {}
+  // Fallback: line by line with a dedicated translation model (alignment stays exact).
+  try {
+    return await Promise.all(lines.map((text) =>
+      env.AI.run('@cf/meta/m2m100-1.2b', { text, source_lang: 'en', target_lang: lang }).then((r) => r?.translated_text || text).catch(() => text)
+    ));
+  } catch {
+    return null;
+  }
 }
 
 /* Rolling health check: a 2-byte range request against each catalog file. */

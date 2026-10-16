@@ -61,7 +61,7 @@ export const tmdb = (path, params = {}) => {
 /* ------------------------------------------------------------ worker config */
 let configPromise;
 export function config() {
-  configPromise ??= getJSON('/api/geo', { ttl: 6 * 3600e3 }).catch(() => ({ country: regionFromLocale() }));
+  configPromise ??= getJSON('/api/geo', { ttl: 3600e3 }).catch(() => ({ country: regionFromLocale() }));
   return configPromise;
 }
 const regionFromLocale = () => {
@@ -80,6 +80,7 @@ export function catalog() {
 }
 
 function toItemFromCatalog(f) {
+  const still = f.still ? '/data/stills/' + f.still : null; // best scene, for films without a TMDB backdrop
   return {
     key: 'ia:' + f.id,
     kind: 'movie',
@@ -93,7 +94,9 @@ function toItemFromCatalog(f) {
     poster: tmdbImg(f.poster, 'w342'),
     posterHd: tmdbImg(f.poster, 'w780'),
     backdrop: tmdbImg(f.backdrop, 'w1280'),
-    backdropSm: tmdbImg(f.backdrop, 'w780'),
+    backdropSm: tmdbImg(f.backdrop, 'w780') || still,
+    still,
+    stillLow: !!f.stlo,
     logo: tmdbImg(f.logo, 'w500'),
     trailer: f.trailer,
     slug: f.s || f.id.replace(/[^A-Za-z0-9_-]/g, '_'),
@@ -136,8 +139,110 @@ export async function catalogDetail(item) {
     language: d.language || [],
     wiki: d.wiki,
     qid: d.qid,
+    release: d.rel || {},
+    // Slideshow frames for films without a trailer: TMDB backdrops, else our best-scene stills.
+    slides: [item.backdrop, ...(d.backdrops || []).map((p) => tmdbImg(p, 'w1280'))].filter(Boolean).concat((d.stills || []).map((s) => '/data/stills/' + s)),
   });
 }
+
+/** Release date and certificate for the viewer's country (falling back to the U.S., then any). */
+export async function releaseFor(item) {
+  const rel = item.release || {};
+  const { country } = await config();
+  const code = rel[country] ? country : rel.US ? 'US' : Object.keys(rel)[0];
+  return code ? { country: code, date: rel[code].d, cert: rel[code].c || null, local: code === country } : null;
+}
+
+/* ------------------------------------------------------------ classic TV series */
+let seriesPromise;
+export function series() {
+  seriesPromise ??= getJSON('/data/tv.json?v=1', { ttl: Infinity, persist: false })
+    .then((d) => d.series.map(toSeries))
+    .catch(() => []);
+  return seriesPromise;
+}
+
+function toSeries(s) {
+  const item = {
+    key: 'series:' + s.sid,
+    kind: 'series',
+    source: 'archive-series',
+    id: s.sid,
+    title: s.name,
+    year: s.year,
+    poster: tmdbImg(s.poster, 'w342'),
+    posterHd: tmdbImg(s.poster, 'w780'),
+    backdrop: tmdbImg(s.backdrop, 'w1280'),
+    backdropSm: tmdbImg(s.backdrop, 'w780'),
+    logo: tmdbImg(s.logo, 'w500'),
+    overview: s.overview || '',
+    genres: s.genres || [],
+    tags: [],
+    network: s.network,
+    rating: s.rating ? { tmdb: s.rating } : {},
+    count: s.count,
+    tmdb: s.tmdb,
+    playable: true,
+    href: '/series/' + s.sid,
+  };
+  item.nseasons = s.nseasons;
+  return item;
+}
+
+/** Episode guide for one series (loaded on demand; the index stays tiny). */
+export async function seriesEpisodes(item) {
+  if (item.seasons) return item;
+  const raw = await getJSON(`/data/tv/${item.id}.json?v=1`, { ttl: Infinity, persist: false }).catch(() => []);
+  item.seasons = raw.map((season) => ({
+    n: season.n,
+    label: season.label,
+    eps: season.eps.map((e) => ({
+      key: `ep:${e.id}/${e.file}`,
+      kind: 'episode',
+      source: 'archive-series',
+      id: e.id,
+      file: e.file,
+      length: e.len,
+      title: e.t || 'Episode',
+      s: e.s,
+      e: e.e,
+      overview: e.ov || '',
+      air: e.air,
+      still: e.still ? tmdbImg(e.still, 'w300') : iaThumb(e.id),
+      poster: item.poster,
+      posterHd: item.posterHd,
+      backdrop: item.backdrop,
+      backdropSm: e.still ? tmdbImg(e.still, 'w780') : item.backdropSm,
+      series: item.id,
+      seriesTitle: item.title,
+      genres: item.genres,
+      tags: [],
+      rating: {},
+      playable: true,
+      href: '/series/' + item.id,
+    })),
+  }));
+  item.episodes = item.seasons.flatMap((x) => x.eps);
+  return item;
+}
+
+export async function seriesById(sid) {
+  const s = (await series()).find((x) => x.id === sid);
+  return s ? seriesEpisodes(s) : null;
+}
+
+/* ------------------------------------------------------------- subtitles */
+export async function subtitleText(item, choice) {
+  const url = choice.source === 'os'
+    ? `/api/subs/os?imdb=${encodeURIComponent(item.imdb)}&lang=${encodeURIComponent(choice.lang || 'en')}`
+    : `/api/subs/ia?id=${encodeURIComponent(item.id)}&file=${encodeURIComponent(choice.file)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('No subtitles');
+  return res.text();
+}
+
+export const subtitleLangs = (imdb) =>
+  imdb ? getJSON(`/api/subs/langs?imdb=${encodeURIComponent(imdb)}`, { ttl: 7 * 86400e3 }).catch(() => []) : Promise.resolve([]);
 
 export async function catalogByImdb() {
   const films = await catalog();
@@ -233,9 +338,16 @@ export async function iaItem(id) {
   item.playable = !!item.file;
   item.overview = stripHtml(asArray(md.description).join(' '));
   item.license = md.licenseurl || null;
+  // Prefer captions made for the original encode over the 512kb copy; one entry per label.
+  const seenLabels = new Set();
   item.subtitles = files
     .filter((f) => /\.(srt|vtt)$/i.test(f.name))
-    .map((f) => ({ file: f.name, label: /\.asr\./i.test(f.name) ? 'English (auto-generated)' : f.name.replace(/^.*[/\\]|\.(srt|vtt)$/gi, '').replace(/[_.-]+/g, ' ') }));
+    .sort((a, b) => /512kb/i.test(a.name) - /512kb/i.test(b.name))
+    .map((f) => ({
+      file: f.name,
+      label: /\.asr\.|auto.?generated/i.test(f.name) ? 'English (auto-generated)' : f.name.replace(/^.*[/\\]|\.(srt|vtt)$/gi, '').replace(/[_.-]+/g, ' ').trim(),
+    }))
+    .filter((s) => !seenLabels.has(s.label) && seenLabels.add(s.label));
   item.thumbs = files
     .map((f) => {
       const m = f.name.match(/\.thumbs\/.+_(\d{6})\.jpg$/i);
@@ -270,15 +382,6 @@ export async function resolveTitle(id) {
   return item;
 }
 
-/* ------------------------------------------------------------ subtitles */
-export async function subtitleTrack(item, choice) {
-  const url = choice.source === 'os'
-    ? `/api/subs/os?imdb=${encodeURIComponent(item.imdb)}&lang=${choice.lang || 'en'}`
-    : `/api/subs/ia?id=${encodeURIComponent(item.id)}&file=${encodeURIComponent(choice.file)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('No subtitles');
-  return URL.createObjectURL(new Blob([await res.text()], { type: 'text/vtt' }));
-}
 
 /* ------------------------------------------------------- stream health */
 export function report(ev, item, extra = {}) {

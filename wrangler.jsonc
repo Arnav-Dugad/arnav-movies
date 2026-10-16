@@ -14,6 +14,7 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "lumen-health", "database_id": "478774cd-836d-420f-8909-f0af5241da91" }
   ],
+  "ai": { "binding": "AI" },
   "triggers": { "crons": ["*/30 * * * *"] },
   "observability": { "enabled": true }
 }

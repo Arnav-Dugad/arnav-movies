@@ -44,8 +44,9 @@ KEY = tmdb_key()
 CACHE = os.path.join(ROOT, ".cache", "http")
 
 
-def get(url, data=None, retries=5, cache=False):
-    """GET/POST JSON with retries. With cache=True, responses are kept on disk so re-runs are fast."""
+def get(url, data=None, retries=5, cache=False, fetch_url=None):
+    """GET/POST JSON with retries. With cache=True, responses are kept on disk so re-runs are fast.
+    `fetch_url` lets the request go somewhere else (e.g. a proxy) while keeping `url` as the cache key."""
     path = None
     if cache:
         import hashlib
@@ -54,7 +55,7 @@ def get(url, data=None, retries=5, cache=False):
         if os.path.exists(path):
             with open(path, encoding="utf-8") as fh:
                 return json.load(fh)
-    value = _get(url, data, retries)
+    value = _get(fetch_url or url, data, retries)
     if path and value is not None:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(value, fh)
@@ -228,9 +229,28 @@ def pick_archive(film):
 
 
 # ------------------------------------------------------------------- 4. tmdb
+# Some ISPs block api.themoviedb.org; the site's own Worker proxies TMDB (key stays server-side).
+TMDB_PROXY = os.environ.get("TMDB_PROXY", "https://lumen-cinema.arnavrival12.workers.dev/api/tmdb/")
+_tmdb_direct = None
+
+
+def tmdb_direct_ok():
+    global _tmdb_direct
+    if _tmdb_direct is None:
+        try:
+            urllib.request.urlopen(urllib.request.Request(f"https://api.themoviedb.org/3/configuration?api_key={KEY}", headers=UA), timeout=10)
+            _tmdb_direct = True
+        except Exception:
+            _tmdb_direct = False
+            print("TMDB API unreachable directly; using the Worker proxy", file=sys.stderr)
+    return _tmdb_direct
+
+
 def tmdb(path, **params):
-    params["api_key"] = KEY
-    return get(f"https://api.themoviedb.org/3/{path}?" + urllib.parse.urlencode(params), cache=True)
+    query = urllib.parse.urlencode({**params, "api_key": KEY})
+    url = f"https://api.themoviedb.org/3/{path}?{query}"  # cache key (api_key is stripped from it)
+    via = None if tmdb_direct_ok() else TMDB_PROXY + path + "?" + urllib.parse.urlencode(params)
+    return get(url, cache=True, fetch_url=via)
 
 
 def tmdb_movie(imdb):
@@ -241,7 +261,7 @@ def tmdb_movie(imdb):
     if not kind:
         return None
     first = found[f"{kind}_results"][0]
-    m = tmdb(f"{kind}/{first['id']}", append_to_response="images,videos,credits", include_image_language="en,null", language="en-US")
+    m = tmdb(f"{kind}/{first['id']}", append_to_response="images,videos,credits,keywords,release_dates", include_image_language="en,null", language="en-US")
     if not m:
         return None
     imgs = m.get("images", {})
@@ -267,7 +287,26 @@ def tmdb_movie(imdb):
         "trailer": vids[0]["key"] if vids else None,
         "cast": [{"n": c["name"], "c": c.get("character") or "", "p": c.get("profile_path")} for c in credits.get("cast", [])[:12]],
         "directors": [c["name"] for c in credits.get("crew", []) if c.get("job") == "Director"],
+        "keywords": [k["name"].lower() for k in (m.get("keywords", {}).get("keywords") or m.get("keywords", {}).get("results") or [])],
+        "rel": release_info(m.get("release_dates", {}).get("results", [])),
+        # Extra stills for Ken Burns slideshows on films without a trailer.
+        "backdrops": [b["file_path"] for b in back[1:9]],
     }
+
+
+def release_info(results):
+    """Per-country first release date and certificate, e.g. {"US": {"d": "1946-11-30", "c": "Approved"}}."""
+    out = {}
+    for r in results:
+        dates = sorted(r.get("release_dates", []), key=lambda x: (x.get("type") not in (1, 3), x.get("release_date") or ""))
+        if not dates:
+            continue
+        cert = next((x["certification"] for x in dates if x.get("certification")), "")
+        entry = {"d": (dates[0].get("release_date") or "")[:10]}
+        if cert:
+            entry["c"] = cert
+        out[r["iso_3166_1"]] = entry
+    return out
 
 
 # --------------------------------------------------------------------- tags
@@ -275,7 +314,11 @@ GENRE_TAGS = {"Horror": "horror", "Comedy": "comedy", "Thriller": "thriller", "M
               "Western": "western", "Animation": "animation", "Science Fiction": "scifi", "Family": "family", "Music": "musical",
               "War": "war", "Documentary": "documentary", "Fantasy": "fantasy", "Adventure": "adventure", "Crime": "crime", "Action": "action"}
 PEOPLE_TAGS = {"Alfred Hitchcock": "hitchcock", "Buster Keaton": "keaton", "Charlie Chaplin": "chaplin", "Harold Lloyd": "lloyd",
-               "Fritz Lang": "lang", "Frank Capra": "capra", "Orson Welles": "welles", "Roger Corman": "cult", "Ed Wood": "cult"}
+               "Fritz Lang": "lang", "Frank Capra": "capra", "Orson Welles": "welles", "Roger Corman": "cult", "Ed Wood": "cult",
+               "Edward D. Wood Jr.": "cult", "William Castle": "cult", "Herschell Gordon Lewis": "cult", "Coleman Francis": "cult",
+               "Ray Dennis Steckler": "cult", "Larry Buchanan": "cult", "Jerry Warren": "cult", "Bert I. Gordon": "cult",
+               "Phil Tucker": "cult", "Al Adamson": "cult", "Doris Wishman": "cult", "Russ Meyer": "cult", "Tod Browning": "cult",
+               "Bela Lugosi": "cult", "Tor Johnson": "cult", "Vincent Price": "cult"}
 
 
 def derive_tags(base, wd, tm, year, runtime, directors, cast):
@@ -293,8 +336,21 @@ def derive_tags(base, wd, tm, year, runtime, directors, cast):
         add("cult")
     if "musical" in wd_genres:
         add("musical")
+    kw = set(tm.get("keywords", []))
+    if kw & {"cult film", "cult classic", "b movie", "b-movie", "exploitation", "grindhouse", "so bad it's good"}:
+        add("cult")
+    if kw & {"film noir", "neo-noir", "noir"}:
+        add("noir")
+    if kw & {"silent film"}:
+        add("silent")
+    if kw & {"christmas", "christmas eve", "santa claus", "holiday", "new year's eve"}:
+        add("christmas")
+    if kw & {"halloween", "haunted house", "ghost", "witch", "vampire", "zombie", "werewolf", "monster", "mad scientist", "frankenstein"}:
+        add("halloween")
+    if kw & {"slapstick comedy", "slapstick", "screwball comedy"}:
+        add("comedy")
     for name in directors + cast[:3]:
-        if name in PEOPLE_TAGS and (name in directors or PEOPLE_TAGS[name] in ("keaton", "chaplin", "lloyd")):
+        if name in PEOPLE_TAGS and (name in directors or PEOPLE_TAGS[name] in ("keaton", "chaplin", "lloyd", "cult")):
             add(PEOPLE_TAGS[name])
     if runtime and runtime < 40:
         add("short")
@@ -337,6 +393,7 @@ def build_one(f, facts):
         "country": wd.get("country", [])[:2], "language": wd.get("language", [])[:1],
         "imdb": imdb, "tmdb": tm["tmdb"], "qid": f["qid"], "wiki": f.get("wiki"),
         "rating": rating, "votes": tm["votes"], "pop": tm["pop"], "pick": f["pick"],
+        "rel": tm.get("rel", {}), "backdrops": tm.get("backdrops", []),
         "tags": derive_tags(f["tags"], wd, tm, year, runtime, [d["n"] for d in directors], [c["n"] for c in cast]),
     }, None
 

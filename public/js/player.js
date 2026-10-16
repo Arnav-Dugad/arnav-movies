@@ -1,17 +1,21 @@
 // Full-screen glass player for Internet Archive streams.
-// Resume · subtitles · scene thumbnails on the scrubber · skip intro · up next / autoplay ·
-// cinema mode · picture tuning · sleep timer · Chromecast · AirPlay · PiP · swipe-down to close ·
-// keyboard shortcuts · lock-screen controls · stream-failure reporting with automatic fallback.
-import { iaItem, iaStream, catalog, nextEpisode, subtitleTrack, report, deadFiles, config } from './api.js';
+// App-icon launch · smart resume recap · subtitles in many languages (OpenSubtitles + AI translation of
+// English captions) with remembered styling · scene thumbnails · skip intro · up next / autoplay ·
+// series queues · cinema mode · picture tuning · de-flicker / steady restoration · sleep timer ·
+// Chromecast · AirPlay · PiP · swipe-down to close · keyboard shortcuts · lock-screen controls ·
+// stream-failure reporting with automatic fallback.
+import { iaItem, iaStream, catalog, nextEpisode, subtitleText, subtitleLangs, report, deadFiles, config } from './api.js';
 import { store } from './store.js';
 import { esc, icon, fmtTime, toast, haptic } from './ui.js';
 import { similar } from './recs.js';
 import { dragDismiss } from './gestures.js';
 import { castAvailable, castMedia, onCastEnd } from './cast.js';
+import { parseVTT, SubtitleRenderer, Translator, subStyle, applySubStyle, SUB_SIZES, SUB_FONTS, SUB_BACKS, SUB_COLORS, TRANSLATE_TO, langName } from './subs.js';
 
 let el = null;
 let current = null;
 let cleanup = [];
+let origin = null; // { key, rect } of the element the player launched from
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
 const SLEEP = [0, 15, 30, 45, 60, -1]; // minutes; -1 = end of title
@@ -21,11 +25,23 @@ const LOOKS = {
   vivid: { label: 'Vivid', b: 1.03, c: 1.1, s: 1.3 },
   night: { label: 'Night', b: 0.88, c: 0.95, s: 0.9 },
 };
+const RESTORE = { off: 'Off', deflicker: 'De-flicker', steady: 'Steady + de-flicker' };
 
-const seriesKey = (title) => title.split(/\s[-–|:]\s|\s(?:S\d+|Season|Episode|Ep\.?)\s*\d/i)[0].trim().toLowerCase();
+const seriesKey = (item) => item.series || item.title.split(/\s[-–|:]\s|\s(?:S\d+|Season|Episode|Ep\.?)\s*\d/i)[0].trim().toLowerCase();
+const hash = (s) => [...s].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7).toString(16);
+const ago = (ts) => {
+  const h = (Date.now() - ts) / 3600e3;
+  return h < 1 ? 'just now' : h < 24 ? `${Math.round(h)} h ago` : `${Math.round(h / 24)} day${h >= 48 ? 's' : ''} ago`;
+};
 
-export async function play(item) {
+/**
+ * Play an item. `from` is the element tapped (the player grows out of it like an app icon);
+ * `queue` is an ordered list of episodes so "next" follows the series.
+ */
+export async function play(item, { from = null, queue = null } = {}) {
   haptic();
+  const rect = from?.getBoundingClientRect?.();
+  origin = rect && rect.width > 20 ? { key: item.key, rect } : null;
   if (!item.file) {
     try {
       const full = await iaItem(item.id);
@@ -42,15 +58,18 @@ export async function play(item) {
     const alt = full?.alts?.find((f) => !dead.has(item.id + '|' + f));
     if (alt) item = { ...item, file: alt };
   }
-  open(item);
+  open(item, queue);
 }
 
-function open(item) {
-  close(true);
+function open(item, queue) {
+  close(true, true);
   item = { ...item };
   current = item;
   const isEp = item.kind === 'episode';
   const art = item.backdrop || item.posterHd || item.poster || '';
+  const subtitle = isEp
+    ? [item.seriesTitle, item.s && item.e ? `S${item.s} · E${item.e}` : null].filter(Boolean).join(' · ')
+    : [item.year, item.director?.[0]].filter(Boolean).join(' · ');
   el = document.createElement('div');
   el.className = 'player is-loading show-ui';
   el.setAttribute('role', 'dialog');
@@ -59,6 +78,9 @@ function open(item) {
     <div class="player__bg" aria-hidden="true">${art ? `<img src="${esc(art)}" alt="">` : ''}</div>
     <div class="player__stage">
       <video playsinline preload="auto" x-webkit-airplay="allow"></video>
+      <canvas class="player__canvas" hidden></canvas>
+      <div class="player__launch" aria-hidden="true">${item.backdropSm || item.posterHd ? `<img src="${esc(item.backdropSm || item.posterHd)}" alt="">` : ''}</div>
+      <div class="player__cues" aria-live="off"></div>
       <div class="player__spinner"></div>
       <div class="player__tap player__tap--l">${icon('back10')}</div>
       <div class="player__tap player__tap--r">${icon('fwd10')}</div>
@@ -70,7 +92,7 @@ function open(item) {
     <div class="player__ui">
       <div class="player__top">
         <button class="p-btn" data-act="close" aria-label="Close player">${icon('x')}</button>
-        <div class="player__title"><strong>${esc(item.title)}</strong><span>${esc([item.year, item.director?.[0]].filter(Boolean).join(' · '))}</span></div>
+        <div class="player__title"><strong>${esc(item.title)}</strong><span>${esc(subtitle)}</span></div>
         <div class="spacer"></div>
         ${castAvailable() ? `<button class="p-btn p-btn--ghost" data-act="cast" aria-label="Cast to TV">${icon('cast')}</button>` : ''}
         ${'webkitShowPlaybackTargetPicker' in HTMLVideoElement.prototype ? `<button class="p-btn p-btn--ghost" data-act="airplay" aria-label="AirPlay">${icon('airplay')}</button>` : ''}
@@ -95,9 +117,9 @@ function open(item) {
           <div class="vol"><button class="p-btn p-btn--ghost" data-act="mute" aria-label="Mute">${icon('volume')}</button><input type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume"></div>
           <div class="spacer"></div>
           <button class="speed" data-act="speed" aria-label="Playback speed">1×</button>
-          <button class="p-btn p-btn--ghost" data-act="panel" data-panel="cc" aria-label="Subtitles">${icon('cc')}</button>
+          <button class="p-btn p-btn--ghost" data-act="panel" data-panel="cc" aria-label="Subtitles and languages">${icon('cc')}</button>
           <button class="p-btn p-btn--ghost" data-act="scenes" aria-label="Scenes" hidden>${icon('scenes')}</button>
-          <button class="p-btn p-btn--ghost" data-act="panel" data-panel="settings" aria-label="Picture and sleep timer">${icon('gear')}</button>
+          <button class="p-btn p-btn--ghost" data-act="panel" data-panel="settings" aria-label="Picture, restoration and sleep timer">${icon('gear')}</button>
           <button class="p-btn p-btn--ghost" data-act="cinema" aria-label="Cinema mode">${icon('theater')}</button>
           ${document.pictureInPictureEnabled ? `<button class="p-btn p-btn--ghost" data-act="pip" aria-label="Picture in picture">${icon('pip')}</button>` : ''}
           <button class="p-btn p-btn--ghost" data-act="fs" aria-label="Full screen">${icon('expand')}</button>
@@ -106,11 +128,12 @@ function open(item) {
       <div class="player__panel glass" data-no-drag hidden></div>
       <div class="scenes glass" data-no-drag hidden><div class="scenes__head"><strong>Scenes</strong><button class="icon-btn" data-act="scenes" aria-label="Close scenes">${icon('x')}</button></div><div class="scenes__strip"></div></div>
       <div class="upnext glass" data-no-drag hidden></div>
+      <div class="recap glass" data-no-drag hidden></div>
     </div>`;
   document.body.appendChild(el);
   const root = el;
   document.body.style.overflow = 'hidden';
-  requestAnimationFrame(() => root.classList.add('is-open'));
+  launch(root);
 
   const v = root.querySelector('video');
   const $ = (s) => root.querySelector(s);
@@ -119,6 +142,9 @@ function open(item) {
   const muteBtn = $('[data-act="mute"]');
   const volInput = $('.vol input');
   const panel = $('.player__panel');
+  const canvas = $('.player__canvas');
+  const subs = new SubtitleRenderer(v, $('.player__cues'));
+  cleanup.push(() => subs.destroy());
   let full = null; // full Archive metadata (thumbs, subtitles, alternates), loaded in the background
   let casting = false;
 
@@ -130,15 +156,16 @@ function open(item) {
   if (store.pref('cinema', false)) root.classList.add('player--cinema');
   applyLook(store.pref('look', null));
 
+  /* ------------------------------------------------------------ smart resume */
   const saved = store.progress(item.key);
-  const resumeAt = saved && saved.t / saved.d < 0.95 ? saved.t : 0;
+  const resumeAt = saved && saved.t / saved.d < 0.95 && saved.t > 20 ? saved.t : 0;
+  const startAt = resumeAt ? Math.max(0, resumeAt - 10) : 0; // back up 10 s so you catch the thread
   v.addEventListener('loadedmetadata', () => {
-    if (resumeAt > 5) {
-      v.currentTime = resumeAt;
-      flash(`Resuming at ${fmtTime(resumeAt)}`);
-    }
+    if (startAt) v.currentTime = startAt;
   }, { once: true });
+  v.addEventListener('playing', () => root.classList.add('is-started'), { once: true });
   v.play().catch(() => root.classList.add('is-paused'));
+  if (resumeAt > 30) showRecap();
 
   iaItem(item.id).then((f) => {
     if (el !== root) return;
@@ -146,8 +173,8 @@ function open(item) {
     item.alts ??= f.alts;
     item.subtitles = f.subtitles;
     setupScenes(f.thumbs);
-    const want = store.pref('subs', null);
-    if (want && f.subtitles?.length) chooseSubs({ source: 'ia', ...f.subtitles[0] }, false);
+    restoreSubtitles();
+    if (resumeAt > 30) fillRecap();
   }).catch(() => {});
 
   // --- UI auto-hide
@@ -155,7 +182,7 @@ function open(item) {
   const poke = () => {
     root.classList.add('show-ui');
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => !v.paused && panel.hidden && root.classList.remove('show-ui'), 3000);
+    hideTimer = setTimeout(() => !v.paused && panel.hidden && $('.recap').hidden && root.classList.remove('show-ui'), 3000);
   };
   root.addEventListener('pointermove', (e) => e.pointerType === 'mouse' && poke());
   poke();
@@ -207,7 +234,7 @@ function open(item) {
   let alts = null;
   const files = [item.file];
   v.addEventListener('error', async () => {
-    const t = v.currentTime || resumeAt;
+    const t = v.currentTime || startAt;
     errored = true;
     attempts++;
     report('error', item, { code: v.error?.code });
@@ -260,8 +287,37 @@ function open(item) {
     return best;
   };
 
+  /* ------------------------------------------------------------ resume recap */
+  function showRecap() {
+    const box = $('.recap');
+    box.hidden = false;
+    box.innerHTML = `<div class="recap__head"><small>Previously</small><strong>You stopped at ${fmtTime(resumeAt)}</strong><span>${esc(ago(saved.at))} · rewound 10 seconds</span></div>
+      <div class="recap__scenes"></div><div class="recap__lines"></div>
+      <div class="recap__actions"><button class="btn btn--glass btn--sm" data-act="restart">Start over</button><button class="btn btn--primary btn--sm" data-act="recap-close">Keep watching</button></div>
+      <i class="recap__timer"></i>`;
+    const hide = setTimeout(() => (box.hidden = true), 10000);
+    cleanup.push(() => clearTimeout(hide));
+  }
+  async function fillRecap() {
+    const box = $('.recap');
+    if (box.hidden) return;
+    const shots = [resumeAt - 240, resumeAt - 120, resumeAt - 30].map((t) => thumbAt(Math.max(0, t))).filter((x, i, a) => x && a.indexOf(x) === i);
+    box.querySelector('.recap__scenes').innerHTML = shots.map((s) => `<img src="${esc(s.url)}" alt="">`).join('');
+    // Last few lines of dialogue before you stopped, from the captions.
+    const src = full?.subtitles?.[0];
+    if (!src) return;
+    try {
+      const cues = parseVTT(await subtitleText(item, { source: 'ia', ...src }));
+      const tmp = new SubtitleRenderer({ currentTime: 0 }, document.createElement('div'));
+      tmp.cues = cues;
+      const lines = tmp.linesBefore(resumeAt, 3);
+      tmp.destroy();
+      if (lines.length && !box.hidden) box.querySelector('.recap__lines').innerHTML = lines.map((l) => `<p>“${esc(l)}”</p>`).join('');
+    } catch {}
+  }
+
   /* --------------------------------------------------------------- skip intro */
-  const sKey = 'intro:' + seriesKey(item.title);
+  const sKey = 'intro:' + seriesKey(item);
   const introEnd = () => store.pref(sKey, 75);
   const skipBtn = $('.skip-pill');
   function intro() {
@@ -283,7 +339,10 @@ function open(item) {
     if (nextItem !== undefined || nextLoading) return nextItem;
     nextLoading = true;
     try {
-      if (isEp) nextItem = await nextEpisode(item);
+      if (queue?.length) {
+        const i = queue.findIndex((x) => x.key === item.key);
+        nextItem = i >= 0 ? queue[i + 1] || null : null;
+      } else if (isEp) nextItem = await nextEpisode(item);
       else {
         const films = await catalog();
         const me = films.find((f) => f.id === item.id) || item;
@@ -306,9 +365,10 @@ function open(item) {
     if (!n || el !== root || (upShown && !ended)) return;
     upShown = true;
     const auto = isEp && store.pref('autoplay', true) && sleepMode !== -1;
+    const label = n.kind === 'episode' && n.s && n.e ? `S${n.s} · E${n.e}` : isEp ? 'Next episode' : 'Up next';
     upBox.hidden = false;
-    upBox.innerHTML = `<div class="upnext__img">${n.backdropSm || n.poster ? `<img src="${esc(n.backdropSm || n.poster)}" alt="">` : ''}</div>
-      <div class="upnext__body"><small>${isEp ? 'Next episode' : 'Up next'}</small><strong>${esc(n.title)}</strong>
+    upBox.innerHTML = `<div class="upnext__img">${n.still || n.backdropSm || n.poster ? `<img src="${esc(n.still || n.backdropSm || n.poster)}" alt="">` : ''}</div>
+      <div class="upnext__body"><small>${esc(label)}</small><strong>${esc(n.title)}</strong>
       <div class="upnext__actions"><button class="btn btn--primary btn--sm" data-act="next">${icon('play')} Play${auto ? ' <span data-count></span>' : ''}</button>
       <button class="btn btn--glass btn--sm" data-act="dismiss-next">Not now</button></div></div>`;
     if (auto && ended) {
@@ -347,48 +407,181 @@ function open(item) {
   }
 
   /* ------------------------------------------------------------------ picture */
-  function applyLook(look) {
+  function lookFilter(look) {
     const l = look || LOOKS.original;
-    v.style.filter = l.b === 1 && l.c === 1 && l.s === 1 ? '' : `brightness(${l.b}) contrast(${l.c}) saturate(${l.s})`;
+    return l.b === 1 && l.c === 1 && l.s === 1 ? '' : `brightness(${l.b}) contrast(${l.c}) saturate(${l.s})`;
+  }
+  function applyLook(look) {
+    v.style.filter = canvas.style.filter = lookFilter(look);
   }
 
+  /* --------------------------------------------- restoration (de-flicker / steady) */
+  // Archive streams can't be read pixel by pixel (no CORS), but they can be *drawn*. Blending each new
+  // frame over the last smooths frame-to-frame brightness flicker and grain; "steady" also crops the
+  // jittery frame edges (gate weave) and blends more strongly.
+  let restoreMode = store.pref('restore', 'off');
+  let frameReq = 0, fresh = true;
+  const ctx2d = canvas.getContext('2d', { alpha: false });
+  const stopRestore = () => {
+    if (frameReq) (v.cancelVideoFrameCallback ? v.cancelVideoFrameCallback(frameReq) : cancelAnimationFrame(frameReq));
+    frameReq = 0;
+  };
+  function drawFrame() {
+    frameReq = 0;
+    if (restoreMode === 'off' || el !== root) return;
+    const w = v.videoWidth, h = v.videoHeight;
+    if (w && h) {
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        fresh = true;
+      }
+      const crop = restoreMode === 'steady' ? 0.035 : 0;
+      ctx2d.globalAlpha = fresh ? 1 : restoreMode === 'steady' ? 0.38 : 0.55;
+      ctx2d.drawImage(v, w * crop, h * crop, w * (1 - 2 * crop), h * (1 - 2 * crop), 0, 0, w, h);
+      fresh = false;
+    }
+    frameReq = v.requestVideoFrameCallback ? v.requestVideoFrameCallback(drawFrame) : requestAnimationFrame(drawFrame);
+  }
+  function setRestore(mode) {
+    restoreMode = mode;
+    store.setPref('restore', mode);
+    stopRestore();
+    const on = mode !== 'off';
+    canvas.hidden = !on;
+    v.classList.toggle('is-hidden', on);
+    fresh = true;
+    if (on) drawFrame();
+  }
+  v.addEventListener('seeked', () => (fresh = true)); // don't ghost across a jump
+  if (restoreMode !== 'off') v.addEventListener('loadeddata', () => setRestore(restoreMode), { once: true });
+  cleanup.push(stopRestore);
+
   /* --------------------------------------------------------------- subtitles */
-  let trackUrl = null, activeSub = null;
+  let activeSub = null; // { kind: 'ia' | 'os' | 'tr', label, ... }
+  let english = null; // { cues, src } — the English source used for translation
+  const subStatus = (msg) => {
+    const badge = $('.player__cues');
+    badge.dataset.status = msg || '';
+  };
+
+  async function loadEnglish() {
+    if (english) return english;
+    const { opensubtitles } = await config();
+    const tries = [];
+    if (opensubtitles && item.imdb) tries.push(['os', { source: 'os', lang: 'en' }, `os:${item.imdb}:en`]);
+    (full?.subtitles || []).forEach((s) => tries.push(['ia', { source: 'ia', ...s }, `ia:${item.id}:${hash(s.file)}`]));
+    for (const [, choice, src] of tries) {
+      try {
+        const cues = parseVTT(await subtitleText(item, choice));
+        if (cues.length > 20) return (english = { cues, src });
+      } catch {}
+    }
+    return null;
+  }
+
   async function chooseSubs(choice, announce = true) {
-    [...v.querySelectorAll('track')].forEach((t) => t.remove());
-    if (trackUrl) URL.revokeObjectURL(trackUrl);
-    trackUrl = null;
+    subs.translator?.stop();
+    subs.translator = null;
+    subStatus('');
     activeSub = choice;
-    store.setPref('subs', choice ? 'on' : null);
-    if (!choice) return announce && flash('Subtitles off');
+    store.setPref('subLang', choice ? choice.pref : null);
+    if (!choice) {
+      subs.set([]);
+      return announce && flash('Subtitles off');
+    }
     try {
-      trackUrl = await subtitleTrack(item, choice);
-      if (el !== root) return;
-      const t = document.createElement('track');
-      Object.assign(t, { kind: 'subtitles', label: choice.label, srclang: 'en', src: trackUrl, default: true });
-      v.appendChild(t);
-      t.track.mode = 'showing';
+      if (choice.kind === 'tr') {
+        const en = await loadEnglish();
+        if (!en) throw new Error('no source');
+        if (el !== root) return;
+        new Translator(subs, en.cues, {
+          lang: choice.lang,
+          src: en.src,
+          onStatus: (s) => subStatus(s === 'working' ? 'Translating…' : s === 'budget' ? 'Translation paused for today' : ''),
+        });
+      } else {
+        const cues = parseVTT(await subtitleText(item, choice.kind === 'os' ? { source: 'os', lang: choice.lang } : { source: 'ia', ...choice.file }));
+        if (!cues.length) throw new Error('empty');
+        if (el !== root) return;
+        subs.set(cues);
+        if (choice.lang === 'en' || choice.kind === 'ia') english ??= { cues, src: choice.kind === 'os' ? `os:${item.imdb}:en` : `ia:${item.id}:${hash(choice.file.file)}` };
+      }
       announce && flash(choice.label);
     } catch {
       activeSub = null;
-      announce && toast('Subtitles aren’t available for this title', 'info');
+      subs.set([]);
+      announce && toast('Subtitles aren’t available in that language for this title', 'info');
     }
   }
 
+  async function subtitleOptions() {
+    const { opensubtitles } = await config();
+    const archive = (full?.subtitles || item.subtitles || []).map((s) => ({ kind: 'ia', label: `${s.label}`, file: s, pref: 'ia' }));
+    const osLangs = opensubtitles && item.imdb ? await subtitleLangs(item.imdb) : [];
+    const os = osLangs.slice(0, 14).map((l) => ({ kind: 'os', lang: l, label: langName(l), pref: 'os:' + l }));
+    const canTranslate = archive.length || osLangs.includes('en');
+    const native = new Set(osLangs.map((l) => l.split('-')[0]));
+    const tr = canTranslate ? TRANSLATE_TO.filter((l) => !native.has(l)).map((l) => ({ kind: 'tr', lang: l, label: `${langName(l)} (translated)`, pref: 'tr:' + l })) : [];
+    return { archive, os, tr };
+  }
+
+  async function restoreSubtitles() {
+    const want = store.pref('subLang', null);
+    if (!want) return;
+    const { archive, os, tr } = await subtitleOptions();
+    // Same language as last time; English captions stand in for each other, other languages don't.
+    const pick = [...os, ...archive, ...tr].find((o) => o.pref === want) || (want === 'ia' || want === 'os:en' ? archive[0] || os.find((o) => o.lang === 'en') : null);
+    if (pick && el === root) chooseSubs(pick, false);
+  }
+
   async function renderPanel(kind) {
+    panel.hidden = false;
+    panel.dataset.kind = kind;
     if (kind === 'cc') {
-      const { opensubtitles } = await config();
-      const opts = [{ label: 'Off', choice: null }, ...(full?.subtitles || item.subtitles || []).map((s) => ({ label: s.label, choice: { source: 'ia', ...s } }))];
-      if (opensubtitles && item.imdb) opts.push({ label: 'English (OpenSubtitles)', choice: { source: 'os', lang: 'en', label: 'English (OpenSubtitles)' } });
-      panel.innerHTML = `<div class="panel__title">Subtitles</div>` +
-        opts.map((o, i) => `<button class="panel__opt ${(activeSub?.label || 'Off') === o.label ? 'is-on' : ''}" data-sub="${i}">${esc(o.label)}${(activeSub?.label || 'Off') === o.label ? icon('check') : ''}</button>`).join('') +
-        (opts.length === 1 ? `<p class="panel__note">No subtitle files for this title.</p>` : '');
+      panel.innerHTML = `<div class="panel__title">Subtitles</div><div class="panel__loading"><span class="spinner"></span></div>`;
+      const { archive, os, tr } = await subtitleOptions();
+      if (el !== root || panel.dataset.kind !== 'cc') return;
+      const all = [{ kind: 'off', label: 'Off', pref: null }, ...os, ...archive];
+      const isOn = (o) => (activeSub?.pref || null) === o.pref;
+      const st = subStyle();
+      panel.innerHTML = `<div class="panel__title">Subtitles</div>
+        ${all.map((o, i) => `<button class="panel__opt ${isOn(o) ? 'is-on' : ''}" data-sub="${i}">${esc(o.label)}${o.kind === 'ia' ? ' <small>Archive</small>' : o.kind === 'os' ? ' <small>OpenSubtitles</small>' : ''}${isOn(o) ? icon('check') : ''}</button>`).join('')}
+        ${all.length === 1 && !tr.length ? `<p class="panel__note">No subtitles found for this title.</p>` : ''}
+        ${tr.length ? `<div class="panel__title">Translate captions</div>
+          <label class="panel__select"><select data-tr aria-label="Translate captions into">
+            <option value="">Choose a language…</option>${tr.map((o, i) => `<option value="${i}" ${isOn(o) ? 'selected' : ''}>${esc(o.label.replace(' (translated)', ''))}</option>`).join('')}
+          </select></label><p class="panel__note">Translated live from the English captions with Workers AI, starting where you are.</p>` : ''}
+        <div class="panel__title">Style</div>
+        <div class="panel__row"><span>Size</span><div class="panel__chips">${Object.keys(SUB_SIZES).map((k) => `<button class="pill ${st.size === k ? 'is-active' : ''}" data-st="size" data-v="${k}">${k.toUpperCase()}</button>`).join('')}</div></div>
+        <div class="panel__row"><span>Font</span><div class="panel__chips">${Object.entries(SUB_FONTS).map(([k, f]) => `<button class="pill ${st.font === k ? 'is-active' : ''}" data-st="font" data-v="${k}">${esc(f.label)}</button>`).join('')}</div></div>
+        <div class="panel__row"><span>Background</span><div class="panel__chips">${Object.entries(SUB_BACKS).map(([k, l]) => `<button class="pill ${st.back === k ? 'is-active' : ''}" data-st="back" data-v="${k}">${l}</button>`).join('')}</div></div>
+        <div class="panel__row"><span>Colour</span><div class="panel__chips">${Object.entries(SUB_COLORS).map(([k, c]) => `<button class="swatch ${st.color === k ? 'is-active' : ''}" data-st="color" data-v="${k}" style="--c:${c}" aria-label="${k}"></button>`).join('')}</div></div>
+        <div class="sub-preview" data-back="${st.back}"><span class="cue">The quick brown fox jumps over the lazy dog.</span></div>`;
+      const preview = panel.querySelector('.sub-preview');
+      applySubStyle(preview, st);
       panel.onclick = (e) => {
         const b = e.target.closest('[data-sub]');
-        if (!b) return;
-        chooseSubs(opts[+b.dataset.sub].choice);
-        hidePanel();
+        if (b) {
+          const o = all[+b.dataset.sub];
+          chooseSubs(o.kind === 'off' ? null : o);
+          return hidePanel();
+        }
+        const s = e.target.closest('[data-st]');
+        if (s) {
+          const next = { ...subStyle(), [s.dataset.st]: s.dataset.v };
+          store.setPref('subStyle', next);
+          applySubStyle($('.player__cues'), next);
+          renderPanel('cc');
+        }
       };
+      panel.onchange = (e) => {
+        if (e.target.matches('[data-tr]') && e.target.value !== '') {
+          chooseSubs(tr[+e.target.value]);
+          hidePanel();
+        }
+      };
+      panel.oninput = null;
     } else {
       const look = store.pref('look', null);
       const lookName = Object.keys(LOOKS).find((k) => LOOKS[k].label === look?.label) || (look ? 'custom' : 'original');
@@ -398,12 +591,16 @@ function open(item) {
         <label class="panel__range">Brightness<input type="range" min="0.6" max="1.5" step="0.02" value="${l.b}" data-k="b"></label>
         <label class="panel__range">Contrast<input type="range" min="0.6" max="1.6" step="0.02" value="${l.c}" data-k="c"></label>
         <label class="panel__range">Color<input type="range" min="0" max="1.6" step="0.05" value="${l.s}" data-k="s"></label>
+        <div class="panel__title">Old-print restoration</div>
+        <div class="panel__chips">${Object.entries(RESTORE).map(([k, x]) => `<button class="pill ${restoreMode === k ? 'is-active' : ''}" data-restore="${k}">${x}</button>`).join('')}</div>
+        <p class="panel__note">Blends frames to calm flicker and grain; Steady also trims the wobbling frame edges.</p>
         <div class="panel__title">Sleep timer</div>
         <div class="panel__chips">${SLEEP.map((m) => `<button class="pill ${sleepMode === m ? 'is-active' : ''}" data-sleep="${m}">${m === 0 ? 'Off' : m === -1 ? 'End of title' : m + ' min'}</button>`).join('')}</div>
         ${isEp ? `<label class="panel__toggle"><span>Autoplay next episode</span><input type="checkbox" ${store.pref('autoplay', true) ? 'checked' : ''} data-autoplay switch></label>` : ''}`;
       panel.onclick = (e) => {
         const lk = e.target.closest('[data-look]');
         const sl = e.target.closest('[data-sleep]');
+        const rs = e.target.closest('[data-restore]');
         if (lk) {
           const x = LOOKS[lk.dataset.look];
           store.setPref('look', lk.dataset.look === 'original' ? null : x);
@@ -412,6 +609,11 @@ function open(item) {
         }
         if (sl) {
           setSleep(+sl.dataset.sleep);
+          renderPanel('settings');
+        }
+        if (rs) {
+          setRestore(rs.dataset.restore);
+          flash(RESTORE[rs.dataset.restore]);
           renderPanel('settings');
         }
       };
@@ -425,8 +627,6 @@ function open(item) {
       };
       panel.onchange = (e) => e.target.matches('[data-autoplay]') && store.setPref('autoplay', e.target.checked);
     }
-    panel.hidden = false;
-    panel.dataset.kind = kind;
   }
   const hidePanel = () => {
     panel.hidden = true;
@@ -449,7 +649,9 @@ function open(item) {
     fwd: () => seek(10),
     mute: () => (v.muted = !v.muted),
     skip: () => { v.currentTime = introEnd(); skipBtn.hidden = true; haptic(); },
-    retry: () => { root.classList.remove('is-error'); attempts = 0; const t = v.currentTime || resumeAt; v.src = iaStream(item.id, item.file) + '?retry=' + Date.now(); v.addEventListener('loadedmetadata', () => (v.currentTime = t), { once: true }); v.play().catch(() => {}); },
+    restart: () => { v.currentTime = 0; $('.recap').hidden = true; v.play().catch(() => {}); },
+    'recap-close': () => { $('.recap').hidden = true; v.play().catch(() => {}); },
+    retry: () => { root.classList.remove('is-error'); attempts = 0; const t = v.currentTime || startAt; v.src = iaStream(item.id, item.file) + '?retry=' + Date.now(); v.addEventListener('loadedmetadata', () => (v.currentTime = t), { once: true }); v.play().catch(() => {}); },
     speed: (btn) => {
       const next = SPEEDS[(SPEEDS.indexOf(v.playbackRate) + 1) % SPEEDS.length] || 1;
       v.playbackRate = next;
@@ -472,9 +674,9 @@ function open(item) {
     next: () => {
       const n = nextItem;
       if (!n) return;
-      close(true);
+      close(true, true);
       history.replaceState({ scroll: 0 }, '', location.href); // the player's entry becomes a normal one
-      play(n);
+      play(n, { queue });
     },
     'dismiss-next': () => (upBox.hidden = true),
     pip: async () => {
@@ -486,7 +688,7 @@ function open(item) {
     airplay: () => v.webkitShowPlaybackTargetPicker?.(),
     cast: async () => {
       flash('Looking for TVs…');
-      const ok = await castMedia({ url: iaStream(item.id, item.file), title: item.title, subtitle: [item.year, item.director?.[0]].filter(Boolean).join(' · '), image: item.posterHd || item.poster, time: v.currentTime });
+      const ok = await castMedia({ url: iaStream(item.id, item.file), title: item.title, subtitle, image: item.posterHd || item.poster, time: v.currentTime });
       if (!ok) return toast('No Cast device connected', 'info');
       casting = true;
       v.pause();
@@ -538,7 +740,7 @@ function open(item) {
   });
 
   // swipe down to close (mobile)
-  cleanup.push(dragDismiss(root, { onDismiss: () => close(), ignore: '.scrub, .player__panel, .scenes, .upnext, input, .vol' , scale: true }));
+  cleanup.push(dragDismiss(root, { onDismiss: () => close(false, true), ignore: '.scrub, .player__panel, .scenes, .upnext, .recap, input, select, .vol', scale: true }));
 
   // scrubbing with thumbnail preview
   const pctFrom = (e) => {
@@ -584,12 +786,12 @@ function open(item) {
 
   // keyboard
   const onKey = (e) => {
-    if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+    if ((e.target.tagName === 'INPUT' && e.target.type !== 'range') || e.target.tagName === 'SELECT') return;
     const k = e.key.toLowerCase();
     const map = {
       ' ': actions.toggle, k: actions.toggle, arrowleft: () => seek(-5), arrowright: () => seek(5), j: () => seek(-10), l: () => seek(10),
       f: actions.fs, m: actions.mute, p: actions.pip, t: actions.cinema, s: actions.scenes,
-      c: () => (activeSub ? chooseSubs(null) : (full?.subtitles?.length ? chooseSubs({ source: 'ia', ...full.subtitles[0] }) : renderPanel('cc'))),
+      c: () => (activeSub ? chooseSubs(null) : renderPanel('cc')),
       escape: () => (!panel.hidden ? hidePanel() : !$('.scenes').hidden ? ($('.scenes').hidden = true) : !document.fullscreenElement && close()),
       arrowup: () => { v.volume = Math.min(1, v.volume + 0.1); flash(`Volume ${Math.round(v.volume * 100)}%`); },
       arrowdown: () => { v.volume = Math.max(0, v.volume - 0.1); flash(`Volume ${Math.round(v.volume * 100)}%`); },
@@ -605,14 +807,13 @@ function open(item) {
   };
   document.addEventListener('keydown', onKey, true);
   cleanup.push(() => document.removeEventListener('keydown', onKey, true));
-  cleanup.push(() => trackUrl && URL.revokeObjectURL(trackUrl));
 
   // lock screen / hardware media keys
   if ('mediaSession' in navigator) {
     const artwork = item.posterHd || item.poster;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: item.title,
-      artist: (item.director || []).join(', ') || 'Lumen',
+      artist: isEp ? item.seriesTitle || 'Lumen' : (item.director || []).join(', ') || 'Lumen',
       album: item.year ? String(item.year) : 'Lumen',
       artwork: artwork ? [{ src: artwork, sizes: '512x768', type: 'image/jpeg' }] : [],
     });
@@ -639,6 +840,38 @@ function open(item) {
   }
 }
 
+/* ------------------------------------------------- app-icon launch / collapse */
+const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const insetFor = (r) => `inset(${r.top}px ${Math.max(0, innerWidth - r.right)}px ${Math.max(0, innerHeight - r.bottom)}px ${r.left}px round 22px)`;
+
+function launch(root) {
+  document.dispatchEvent(new CustomEvent('player:open'));
+  if (!origin || reduced() || !root.animate) {
+    requestAnimationFrame(() => root.classList.add('is-open'));
+    return;
+  }
+  root.classList.add('is-open', 'is-launching');
+  const a = root.animate(
+    [{ clipPath: insetFor(origin.rect), opacity: 0.6 }, { clipPath: 'inset(0px 0px 0px 0px round 0px)', opacity: 1 }],
+    { duration: 620, easing: 'cubic-bezier(.2, .9, .2, 1)' }
+  );
+  a.onfinish = () => root.classList.remove('is-launching');
+}
+
+function collapse(dead) {
+  // Shrink back into the card we came from if it's still on screen; otherwise fade out.
+  const sel = origin?.key && document.querySelector(`.card[data-key="${CSS.escape(origin.key)}"] .card__media, [data-launch-key="${CSS.escape(origin.key)}"]`);
+  const r = sel?.getBoundingClientRect();
+  if (r && r.width && !reduced() && dead.animate && r.bottom > 0 && r.top < innerHeight) {
+    dead.classList.add('is-launching');
+    dead.animate([{ clipPath: 'inset(0px 0px 0px 0px round 0px)', opacity: 1 }, { clipPath: insetFor(r), opacity: 0.4 }], { duration: 480, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' });
+    setTimeout(() => dead.remove(), 470);
+  } else {
+    dead.classList.remove('is-open');
+    setTimeout(() => dead.remove(), 400);
+  }
+}
+
 function toggleFullscreen(v) {
   const target = v.closest('.player');
   if (document.fullscreenElement) return document.exitFullscreen();
@@ -646,7 +879,7 @@ function toggleFullscreen(v) {
   if (v.webkitEnterFullscreen) v.webkitEnterFullscreen(); // iOS Safari
 }
 
-export function close(fromHistory = false) {
+export function close(fromHistory = false, instant = false) {
   if (!el) return;
   const v = el.querySelector('video');
   if (current && v.duration) store.setProgress(current, v.currentTime, v.duration);
@@ -659,8 +892,9 @@ export function close(fromHistory = false) {
   const dead = el;
   el = null;
   current = null;
-  dead.classList.remove('is-open');
-  setTimeout(() => dead.remove(), 400);
+  if (instant) {
+    dead.remove();
+  } else collapse(dead);
   document.body.style.overflow = '';
   if (!fromHistory && history.state?.player) history.back();
   document.dispatchEvent(new CustomEvent('player:closed'));

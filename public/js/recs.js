@@ -29,7 +29,7 @@ export function similar(film, films, n = 14) {
     .map(([f]) => f);
 }
 
-const seenKeys = () => new Set([...store.list().map((x) => x.key), ...Object.keys(store.allProgress())]);
+const seenKeys = () => new Set([...store.list().map((x) => x.key), ...Object.keys(store.allProgress()), ...store.rejected()]);
 
 export function recommend(films, n = 16) {
   const taste = store.taste();
@@ -47,7 +47,9 @@ export function recommend(films, n = 16) {
 export function becauseYouWatched(films, n = 2) {
   const byKey = new Map(films.map((f) => [f.key, f]));
   const seen = seenKeys();
+  const rejected = store.rejected();
   const recent = Object.values(store.allProgress())
+    .filter((p) => !rejected.has(p.item.key)) // films you bailed on shouldn't seed recommendations
     .sort((a, b) => b.at - a.at)
     .map((p) => byKey.get(p.item.key))
     .filter(Boolean)
@@ -60,7 +62,8 @@ export function becauseYouWatched(films, n = 2) {
 /** Nightly "Lumen Picks": quality titles, nudged by taste, reshuffled each midnight. */
 export function lumenPicks(films, n = 14) {
   const taste = store.taste();
-  const pool = films.filter((f) => !f.tags.includes('short') && (f.rating?.rt >= 75 || f.rating?.tmdb >= 6.6));
+  const rejected = store.rejected();
+  const pool = films.filter((f) => !f.tags.includes('short') && !rejected.has(f.key) && (f.rating?.rt >= 75 || f.rating?.tmdb >= 6.6));
   const order = dailyShuffle(pool, 'picks');
   const jitter = new Map(order.map((f, i) => [f.key, (order.length - i) / order.length]));
   return pool
@@ -75,4 +78,29 @@ export function hoursUntilMidnight() {
   const next = new Date(now);
   next.setHours(24, 0, 0, 0);
   return Math.max(1, Math.round((next - now) / 3600e3));
+}
+
+/** "Because you liked <actor>": the performer who appears most in what you finished or saved. */
+export function becauseYouLikedActor(films) {
+  const byKey = new Map(films.map((f) => [f.key, f]));
+  const weight = new Map();
+  const names = new Map();
+  const bump = (film, w) => {
+    (film?.people || []).slice(0, 4).forEach((p) => {
+      const id = p.qid || p.name;
+      weight.set(id, (weight.get(id) || 0) + w);
+      names.set(id, p);
+    });
+  };
+  Object.values(store.allProgress()).forEach((p) => {
+    const f = p.t / p.d;
+    if (f > 0.3) bump(byKey.get(p.item.key), f > 0.9 ? 3 : 1.5);
+  });
+  store.list().forEach((x) => bump(byKey.get(x.key), 2));
+  const seen = seenKeys();
+  for (const [id] of [...weight].sort((a, b) => b[1] - a[1])) {
+    const items = films.filter((f) => !seen.has(f.key) && f.people.some((p) => (p.qid || p.name) === id));
+    if (items.length >= 3) return { actor: names.get(id), items: items.slice(0, 18) };
+  }
+  return null;
 }

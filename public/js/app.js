@@ -1,14 +1,16 @@
 // App shell: router, view transitions (incl. poster morph), navigation chrome and global interactions.
 import * as views from './views.js';
 import { registry } from './views.js';
-import { tv, show, anime } from './tv.js';
+import { tv, show, anime, seriesView } from './tv.js';
+import { shorts } from './shorts.js';
+import { initHoverCards } from './hovercard.js';
 import { personView } from './people.js';
 import { statusView } from './status.js';
-import { catalog, resolveTitle } from './api.js';
+import { catalog, resolveTitle, seriesById } from './api.js';
 import { store } from './store.js';
 import { play } from './player.js';
 import { initSearch, openSearch } from './search.js';
-import { icon, toast, haptic, initPreviews } from './ui.js';
+import { icon, toast, haptic } from './ui.js';
 import { dragDismiss } from './gestures.js';
 
 const view = document.getElementById('view');
@@ -22,6 +24,8 @@ const routes = [
   [/^\/title\/(.+?)\/?$/, views.title, 'movies', true],
   [/^\/show\/(t?\d+)\/?$/, show, 'tv', true],
   [/^\/anime\/(\d+)\/?$/, anime, 'tv', true],
+  [/^\/series\/([\w-]+)\/?$/, seriesView, 'tv', true],
+  [/^\/shorts\/?$/, shorts, 'shorts'],
   [/^\/person\/(Q\d+)\/?$/, personView, ''],
   [/^\/status\/?$/, statusView, ''],
 ];
@@ -43,7 +47,7 @@ async function render({ restoreScroll = 0, morph = false } = {}) {
     morph,
     alive: () => my === token,
     onLeave: (f) => leaveFns.push(f),
-    play: (item) => play(item),
+    play: (item, opts) => play(item, opts),
     share,
     refresh: () => render({ restoreScroll: scrollY }),
   };
@@ -137,6 +141,14 @@ function hideSplash() {
 /* ------------------------------------------------------------- global clicks */
 async function findItem(key) {
   if (registry.has(key)) return registry.get(key);
+  if (key.startsWith('ep:')) {
+    // An episode from Continue Watching: find it in its series so "next" follows the season.
+    const sid = store.progress(key)?.item?.series;
+    const sr = sid ? await seriesById(sid) : null;
+    const ep = sr?.episodes.find((x) => x.key === key);
+    if (ep) registry.set(key, ep);
+    return ep || null;
+  }
   if (key.startsWith('ia:')) {
     const item = await resolveTitle(key.slice(3));
     registry.set(key, item);
@@ -152,8 +164,14 @@ document.addEventListener('click', async (e) => {
   if (playEl) {
     e.preventDefault();
     e.stopPropagation();
-    const item = await findItem('ia:' + playEl.dataset.play);
-    if (item) play(item);
+    const v = playEl.dataset.play;
+    const item = await findItem(/^(ia|ep):/.test(v) ? v : 'ia:' + v);
+    if (!item) return;
+    // The player grows out of whatever was tapped: a card, the hero, the poster.
+    const from = playEl.closest('.card')?.querySelector('.card__media') || playEl.closest('.hcard')?.querySelector('.hcard__media')
+      || document.querySelector(`[data-launch-key="${CSS.escape(item.key)}"]`) || playEl.closest('.hero__slide')?.querySelector('.hero__bg') || playEl;
+    const queue = item.series ? (await seriesById(item.series))?.episodes : null;
+    play(item, { from, queue });
     return;
   }
 
@@ -183,6 +201,9 @@ document.addEventListener('click', async (e) => {
     return navigate(pick.href);
   }
 
+  const prose = e.target.closest('.detail .prose');
+  if (prose && matchMedia('(max-width: 760px)').matches) prose.classList.toggle('is-open'); // tap to read the full synopsis
+
   if (e.target.closest('[data-open-search]')) {
     e.preventDefault();
     haptic();
@@ -209,10 +230,10 @@ async function share(item) {
 
 /* -------------------------------------------------------------------- boot */
 initSearch(navigate);
-initPreviews();
+initHoverCards((key) => registry.get(key));
 document.addEventListener('player:closed', () => {
   // Refresh progress-dependent UI (Resume buttons, Continue Watching, Because you watched).
-  if (['/', '/list'].includes(location.pathname) || location.pathname.startsWith('/title/')) render({ restoreScroll: scrollY });
+  if (['/', '/list'].includes(location.pathname) || /^\/(title|series)\//.test(location.pathname)) render({ restoreScroll: scrollY });
 });
 history.replaceState({ scroll: 0, idx: 0 }, '');
 render();

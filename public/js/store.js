@@ -4,7 +4,7 @@
 const KEY = 'lumen:v1';
 const listeners = new Set();
 
-const blank = () => ({ list: [], progress: {}, days: {}, genres: {}, prefs: {} });
+const blank = () => ({ list: [], progress: {}, days: {}, genres: {}, prefs: {}, nope: {} });
 
 function load() {
   try {
@@ -44,6 +44,12 @@ const snapshot = (item) => ({
   logo: item.logo,
   thumbOnly: item.thumbOnly,
   playable: item.playable,
+  tags: (item.tags || []).slice(0, 8),
+  still: item.still,
+  series: item.series,
+  seriesTitle: item.seriesTitle,
+  s: item.s,
+  e: item.e,
 });
 
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -79,11 +85,36 @@ export const store = {
     save();
   },
   continueWatching() {
+    const seen = new Set();
     return Object.values(state.progress)
-      .filter((p) => p.t / p.d > 0.01 && p.t / p.d < 0.95)
+      .filter((p) => p.t / p.d > 0.01 && p.t / p.d < 0.95 && !state.nope[p.item.key])
       .sort((a, b) => b.at - a.at)
+      .filter((p) => {
+        // One card per series: the episode you watched most recently.
+        if (!p.item.series) return true;
+        if (seen.has(p.item.series)) return false;
+        seen.add(p.item.series);
+        return true;
+      })
       .slice(0, 20);
   },
+
+  /** Progress for every episode of a series, keyed by episode key, plus the most recent one. */
+  seriesProgress(sid) {
+    const eps = Object.values(state.progress).filter((p) => p.item.series === sid);
+    return { byKey: Object.fromEntries(eps.map((p) => [p.item.key, p])), last: eps.sort((a, b) => b.at - a.at)[0] || null };
+  },
+
+  /** "Not interested": hides a title from recommendations and counts against its genres. */
+  dismiss(item) {
+    state.nope[item.key] = { at: Date.now(), genres: (item.genres || []).slice(0, 3), tags: (item.tags || []).slice(0, 6) };
+    save();
+  },
+  undismiss(key) {
+    delete state.nope[key];
+    save();
+  },
+  isDismissed: (key) => !!state.nope[key],
 
   /** Adds watched seconds to today's total and to each genre's tally. */
   logWatch(item, seconds) {
@@ -120,10 +151,26 @@ export const store = {
   taste() {
     const w = {};
     const add = (g, n) => (w[g] = (w[g] || 0) + n);
-    state.list.forEach((x) => (x.genres || []).forEach((g) => add(g, 3)));
-    Object.values(state.progress).forEach((p) => (p.item.genres || []).forEach((g) => add(g, 2 + (p.t / p.d) * 3)));
+    const each = (x, n) => [...(x.genres || []), ...(x.tags || [])].forEach((g) => add(g, n));
+    state.list.forEach((x) => each(x, 3));
+    const now = Date.now();
+    Object.values(state.progress).forEach((p) => {
+      const f = p.t / p.d;
+      // Stopped early and never came back (90s+ in, under 15%, untouched for a day and a half).
+      if (f < 0.15 && p.t > 90 && now - p.at > 36 * 3600e3) return each(p.item, -2.5);
+      each(p.item, 2 + f * 3 + (f > 0.9 ? 2 : 0));
+    });
+    Object.values(state.nope).forEach((x) => each(x, -4));
     Object.entries(state.genres).forEach(([g, s]) => add(g, s / 600));
     return w;
+  },
+
+  /** Keys the viewer has rejected or abandoned, so recommendations can skip them. */
+  rejected() {
+    const now = Date.now();
+    const out = new Set(Object.keys(state.nope));
+    Object.values(state.progress).forEach((p) => p.t / p.d < 0.15 && p.t > 90 && now - p.at > 36 * 3600e3 && out.add(p.item.key));
+    return out;
   },
 
   pref: (k, fallback) => (k in state.prefs ? state.prefs[k] : fallback),

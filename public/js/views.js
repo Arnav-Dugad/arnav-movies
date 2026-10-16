@@ -4,9 +4,10 @@ import * as api from './api.js';
 import { store } from './store.js';
 import {
   esc, icon, posterCard, wideCard, rankCard, row, skeletonRow, wireRows, wireTilt, listButton,
-  metaLine, fmtRuntime, fmtHours, setAmbient, emptyState, footer, ratingBadges, openTrailer, ytEmbed,
+  metaLine, fmtRuntime, fmtHours, setAmbient, emptyState, footer, ratingBadges, openTrailer, ytEmbed, kenBurns,
 } from './ui.js';
-import { similar, recommend, becauseYouWatched, lumenPicks, dailyShuffle, hoursUntilMidnight } from './recs.js';
+import { similar, recommend, becauseYouWatched, becauseYouLikedActor, lumenPicks, dailyShuffle, hoursUntilMidnight } from './recs.js';
+import { currentSeason, applySeason, daysUntil, particles } from './seasons.js';
 
 /* Item registry so global click handlers (play, My List) can find the full item for a card. */
 export const registry = new Map();
@@ -40,9 +41,15 @@ export const COLLECTIONS = {
   documentary: { title: 'Documentaries', sub: 'History on film', tile: 'linear-gradient(135deg,#283c86,#45a247)', ia: 'subject:documentary' },
   capra: { title: 'Frank Capra', sub: 'Big-hearted Americana', tile: 'linear-gradient(135deg,#355c7d,#c06c84)', ia: 'creator:capra' },
   welles: { title: 'Orson Welles', sub: 'The boy wonder', tile: 'linear-gradient(135deg,#232526,#414345)', ia: 'creator:welles' },
+  chaplin: { title: 'Charlie Chaplin', sub: 'The Little Tramp, from Keystone to Mutual', tile: 'linear-gradient(135deg,#1f1c18,#8e6f4a)', ia: 'creator:chaplin OR title:chaplin', collection: 'silent_films OR feature_films' },
+  keaton: { title: 'Buster Keaton', sub: 'The Great Stone Face and his impossible stunts', tile: 'linear-gradient(135deg,#283048,#859398)', ia: 'creator:keaton OR title:keaton', collection: 'silent_films OR feature_films' },
+  lloyd: { title: 'Harold Lloyd', sub: 'The glasses, the clock, the thrill comedies', tile: 'linear-gradient(135deg,#3e2723,#bcaaa4)', ia: 'creator:lloyd OR title:"harold lloyd"', collection: 'silent_films OR feature_films' },
+  halloween: { title: 'Halloween Frights', sub: 'Ghosts, witches and things that go bump', tile: 'linear-gradient(135deg,#ff7a1a,#3b0a45)', match: any('halloween', 'horror'), ia: 'subject:(horror OR halloween OR ghost)' },
+  christmas: { title: 'Holiday Classics', sub: 'Cosy, festive and free', tile: 'linear-gradient(135deg,#b31217,#1e5631)', match: any('christmas'), ia: 'subject:(christmas OR holiday)' },
 };
 
 const MOODS = [
+  { tag: 'shorts', label: 'Shorts', c: '#ffb340', href: '/shorts' },
   { tag: 'horror', label: 'Spooky', c: '#b3123d' },
   { tag: 'comedy', label: 'Make me laugh', c: '#f7971e' },
   { tag: 'thriller', label: 'Edge of my seat', c: '#8e2de2' },
@@ -114,11 +121,17 @@ export async function home(ctx) {
   const features = films.filter((f) => !f.tags.includes('short'));
   const score = (f) => (f.backdrop && f.logo ? 2 : 0) + boost.filter((t) => f.tags.includes(t)).length;
   const ranked = dailyShuffle(features.slice(0, 120), 'hero').sort((a, b) => score(b) - score(a));
-  const heroItems = ranked.filter((f) => (f.backdrop || f.posterHd) && f.overview).slice(0, 6);
+  const season = currentSeason();
+  applySeason(season);
+  ctx.onLeave(() => applySeason(null));
+  const seasonal = season ? films.filter((f) => !f.tags.includes('short') && season.tags.some((t) => f.tags.includes(t))) : [];
+  const heroPool = season && seasonal.length >= 6 ? dailyShuffle(seasonal.filter((f) => f.backdrop && f.overview), season.id).concat(ranked) : ranked;
+  const heroItems = [...new Map(heroPool.filter((f) => (f.backdrop || f.posterHd) && f.overview).map((f) => [f.key, f])).values()].slice(0, 6);
   const cw = store.continueWatching();
   const picks = lumenPicks(films);
   const because = becauseYouWatched(films);
   const forYou = recommend(films);
+  const actorRow = becauseYouLikedActor(films);
   const top10 = features.slice(0, 10);
   const r = (tag, title = COLLECTIONS[tag].title) => {
     const list = byTag(films, tag);
@@ -126,15 +139,17 @@ export async function home(ctx) {
   };
 
   ctx.el.innerHTML = `<div class="view view--flush">
-    ${hero(heroItems, greet)}
+    ${hero(heroItems, season ? season.eyebrow : greet)}
     <div class="rows">
       <div class="container"><div class="moods" role="list">
         <button class="mood mood--surprise" data-surprise role="listitem"><i>${icon('shuffle')}</i>Surprise me</button>
-        ${MOODS.map((m) => `<a class="mood glass" href="/collection/${m.tag}" role="listitem"><i style="background:${m.c}33;color:${m.c}">●</i>${esc(m.label)}</a>`).join('')}
+        ${MOODS.map((m) => `<a class="mood glass" href="${m.href || '/collection/' + m.tag}" role="listitem"><i style="background:${m.c}33;color:${m.c}">●</i>${esc(m.label)}</a>`).join('')}
       </div></div>
+      ${season && seasonal.length >= 6 ? row({ title: season.title, sub: (() => { const d = daysUntil(season); return d > 0 ? `${d} day${d > 1 ? 's' : ''} to ${season.countdownLabel} · ${season.sub}` : d === 0 ? `Happy ${season.countdownLabel}!` : season.sub; })(), more: `/collection/${season.id === 'holidays' ? 'christmas' : season.id === 'valentines' ? 'romance' : 'halloween'}`, variant: 'wide', cards: dailyShuffle(seasonal, season.id).slice(0, 24).map((f) => wideCard(f)).join('') }) : ''}
       ${cw.length ? row({ title: 'Continue Watching', variant: 'wide', cards: cw.map((p) => wideCard(reg([registry.get(p.item.key) || p.item])[0], p)).join('') }) : ''}
       ${row({ title: 'Lumen Picks', sub: `Tonight’s selection · refreshes in ${hoursUntilMidnight()}h`, variant: 'wide', cards: picks.map((f) => wideCard(f)).join('') })}
       ${because.map((b) => row({ title: `Because you watched ${b.seed.title}`, cards: b.items.map((f) => posterCard(f)).join('') })).join('')}
+      ${actorRow ? row({ title: `Because you liked ${actorRow.actor.name}`, sub: 'More with them, free', more: actorRow.actor.qid ? `/person/${actorRow.actor.qid}` : '', cards: actorRow.items.map((f) => posterCard(f)).join('') }) : ''}
       ${forYou?.length ? row({ title: 'For You', sub: 'Based on what you watch and save', cards: forYou.map((f) => posterCard(f)).join('') }) : ''}
       ${row({ title: 'Top 10 Free Classics', variant: 'rank', cards: top10.map((f, i) => rankCard(f, i + 1)).join('') })}
       ${row({ title: 'Browse Collections', variant: 'tiles', cards: Object.keys(COLLECTIONS).filter((t) => byTag(films, t).length >= 3).map((t) => tileHtml(t, films)).join('') })}
@@ -144,10 +159,12 @@ export async function home(ctx) {
       ${r('hitchcock', 'Hitchcock in the Public Domain')}
       <div data-slot="vault">${skeletonRow('Most Streamed in the Vault', 6, true)}</div>
       ${r('noir')}
-      ${r('clowns')}
+      ${r('chaplin', 'Charlie Chaplin')}
+      ${r('keaton', 'Buster Keaton')}
       <div data-slot="anime">${skeletonRow('Trending Anime')}</div>
       ${r('silentshorts')}
-      <div data-slot="classictv">${skeletonRow('Classic TV — Free', 6, true)}</div>
+      <div data-slot="series">${skeletonRow('Classic TV Series — Free')}</div>
+      ${r('cult', 'Cult Classics')}
       ${r('scifi')}
       <div data-slot="streaming">${skeletonRow('New on Streaming Today')}</div>
       ${r('comedy', 'Laugh Out Loud')}
@@ -159,6 +176,7 @@ export async function home(ctx) {
   </div>`;
   wireRows(ctx.el);
   wireHero(ctx);
+  if (season) ctx.onLeave(particles(ctx.el.querySelector('.hero'), season.particles));
 
   api.airingTonight().then((shows) =>
     fill(ctx, '[data-slot="tonight"]', shows.length ? row({ title: 'Airing Tonight', sub: `${new Date().toLocaleDateString(undefined, { weekday: 'long' })} · ${api.countryName(shows.country)}`, more: '/tv', cards: reg(shows.slice(0, 24)).map((s) => posterCard(s)).join('') }) : '')
@@ -180,6 +198,10 @@ export async function home(ctx) {
   api.iaSearch({ collection: 'classic_tv', rows: 24 }).then(({ items }) =>
     fill(ctx, '[data-slot="classictv"]', row({ title: 'Classic TV — Free', sub: 'Vintage episodes, ready to stream', more: '/tv#classic', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }))
   ).catch(() => fill(ctx, '[data-slot="classictv"]', ''));
+
+  api.series().then((list) =>
+    fill(ctx, '[data-slot="series"]', list.length ? row({ title: 'Classic TV Series — Free', sub: 'Whole seasons, in order', more: '/tv#series', cards: reg(list).map((s) => posterCard({ ...s, playable: false })).join('') }) : '')
+  );
 
   api.streamingToday().then((shows) =>
     fill(ctx, '[data-slot="streaming"]', shows.length ? row({ title: 'New on Streaming Today', sub: 'Episodes dropping on Netflix, Prime, Disney+ and more', more: '/tv', cards: reg(shows.slice(0, 24)).map((s) => posterCard(s)).join('') }) : '')
@@ -523,8 +545,12 @@ export async function title(ctx, id) {
   const isEp = item.kind === 'episode';
   const directors = item.directors?.length ? item.directors.map((d) => personLink({ name: d.n, qid: d.q })).join(', ') : (item.director || []).map(esc).join(', ');
 
+  const rel = curated ? await api.releaseFor(item) : null;
+  const relText = rel?.date ? `${new Date(rel.date + 'T00:00:00').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}${rel.local ? '' : ` · ${api.countryName(rel.country)}`}` : '';
   const facts = [
     directors && ['Directed by', directors],
+    relText && ['Released', esc(relText)],
+    rel?.cert && ['Certificate', `${esc(rel.cert)} <small style="color:var(--text-3)">(${esc(api.countryName(rel.country))})</small>`],
     item.genres?.length && ['Genres', item.genres.map(esc).join(', ')],
     item.runtime && ['Runtime', fmtRuntime(item.runtime)],
     item.country?.length && ['Country', item.country.map(esc).join(', ')],
@@ -541,12 +567,12 @@ export async function title(ctx, id) {
     <div class="detail__backdrop ${item.backdrop ? 'detail__backdrop--sharp' : ''}"><img src="${esc(item.backdrop || item.posterHd || item.poster)}" alt=""></div>
     <div class="container">
       <div class="detail__hero">
-        <div class="detail__poster" data-tilt><div class="tilt">${item.posterHd || item.poster ? `<img src="${esc(item.posterHd || item.poster)}" alt="${esc(item.title)} poster" data-morph>` : `<div class="card__fallback">${esc(item.title)}</div>`}<div class="tilt__glare"></div></div></div>
+        <div class="detail__poster" data-tilt><div class="tilt">${item.posterHd || item.poster ? `<img src="${esc(item.posterHd || item.poster)}" alt="${esc(item.title)} poster" data-morph data-launch-key="${esc(item.key)}">` : `<div class="card__fallback">${esc(item.title)}</div>`}<div class="tilt__glare"></div></div></div>
         <div class="detail__info">
           <div class="eyebrow">${isEp ? 'Classic TV' : 'Film'} · <span style="color:#7ee2a0">Free to watch</span></div>
           <h1 class="detail__title ${item.logo ? 'has-logo' : ''}">${titleArt(item, 'detail__logo')}</h1>
           ${item.tagline ? `<p class="detail__tagline">${esc(item.tagline)}</p>` : ''}
-          <div class="chips">${metaLine(item, { max: 4 })}</div>
+          <div class="chips">${rel?.cert ? `<span class="cert" title="Certificate in ${esc(api.countryName(rel.country))}">${esc(rel.cert)}</span>` : ''}${metaLine(item, { max: 4 })}</div>
           ${Object.keys(item.rating || {}).length ? `<div class="scores">${ratingBadges(item.rating)}</div>` : ''}
           <div class="detail__actions">
             ${item.playable ? `<button class="btn btn--primary" data-play="${esc(item.id)}">${icon('play')} ${p && pct < 95 ? `Resume · ${pct}%` : 'Play'}</button>` : `<span class="btn btn--glass" aria-disabled="true">Not streamable</span>`}
@@ -582,6 +608,12 @@ export async function title(ctx, id) {
   </div>`;
   if (ctx.morph) ctx.el.querySelector('[data-morph]')?.style.setProperty('view-transition-name', 'poster-morph');
   setAmbient(item.poster);
+  // No trailer? Let the backdrop breathe with a slow Ken Burns slideshow of stills.
+  if (!item.trailer && item.slides?.length > 1) {
+    const bd = ctx.el.querySelector('.detail__backdrop');
+    bd.classList.add('detail__backdrop--sharp');
+    ctx.onLeave(kenBurns(bd, item.slides));
+  }
   wireTilt(ctx.el);
   wireRows(ctx.el);
 

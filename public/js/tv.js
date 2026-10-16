@@ -2,6 +2,7 @@
 import * as api from './api.js';
 import { esc, icon, posterCard, wideCard, rankCard, row, skeletonRow, wireTilt, wireRows, listButton, metaLine, fmtRuntime, setAmbient, setAmbientHex, footer, ratingBadges, openTrailer } from './ui.js';
 import { reg, fill, castRow, detailSkeleton, notFound } from './views.js';
+import { store } from './store.js';
 
 let showPool;
 const pool = () => (showPool ??= api.popularShows().catch(() => []));
@@ -18,6 +19,7 @@ export async function tv(ctx) {
       <div data-slot="anime-trending" id="anime">${skeletonRow('Trending Anime')}</div>
       <div data-slot="anime-season">${skeletonRow('This Season’s Anime')}</div>
       <div data-slot="loved">${skeletonRow('Most Loved Shows')}</div>
+      <div data-slot="series" id="series">${skeletonRow('Classic TV Series — Free')}</div>
       <div data-slot="classic" id="classic">${skeletonRow('Classic TV — Free to Stream', 6, true)}</div>
       <div data-slot="anime-top">${skeletonRow('Top 10 Anime of All Time')}</div>
       <div data-slot="web">${skeletonRow('New on Streaming Today')}</div>
@@ -29,6 +31,10 @@ export async function tv(ctx) {
   api.popularInCountry().then((s) => fill(ctx, '[data-slot="local"]', s.length >= 4 ? row({ title: `Popular in ${api.countryName(s.country)}`, sub: 'Shows made here', cards: posters(s) }) : '')).catch(() => fill(ctx, '[data-slot="local"]', ''));
   api.airingTonight().then((s) => fill(ctx, '[data-slot="tonight"]', s.length ? row({ title: 'Airing Tonight', sub: `Broadcast in ${api.countryName(s.country)}`, cards: posters(s) }) : '')).catch(() => fill(ctx, '[data-slot="tonight"]', ''));
   api.streamingToday().then((s) => fill(ctx, '[data-slot="web"]', s.length ? row({ title: 'New on Streaming Today', cards: posters(s) }) : '')).catch(() => fill(ctx, '[data-slot="web"]', ''));
+  api.series().then((list) => {
+    fill(ctx, '[data-slot="series"]', list.length ? `<div id="series">${row({ title: 'Classic TV Series — Free', sub: 'Whole seasons from the 1950s and ’60s, in order', cards: reg(list).map((x) => posterCard({ ...x, playable: false })).join('') })}</div>` : '');
+    if (location.hash === '#series') ctx.el.querySelector('#series')?.scrollIntoView({ behavior: 'smooth' });
+  });
   api.iaSearch({ collection: 'classic_tv', rows: 30 }).then(({ items }) => fill(ctx, '[data-slot="classic"]', `<div id="classic">${row({ title: 'Classic TV — Free to Stream', sub: 'Public-domain episodes from the Internet Archive', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') })}</div>`)).catch(() => fill(ctx, '[data-slot="classic"]', ''));
   api.animeRows().then((a) => {
     fill(ctx, '[data-slot="anime-trending"]', `<div id="anime">${row({ title: 'Trending Anime', sub: 'From AniList', cards: posters(a.trending) })}</div>`);
@@ -308,4 +314,89 @@ export async function anime(ctx, id) {
   ctx.el.querySelector('[data-trailer-open]')?.addEventListener('click', (e) => openTrailer(e.currentTarget.dataset.trailerOpen, a.title));
   if (a.next) countdown(ctx, ctx.el.querySelector('[data-countdown]'), a.next.airingAt * 1000);
   wireRows(ctx.el);
+}
+
+/* ==================================================================== SERIES */
+export async function seriesView(ctx, sid) {
+  ctx.el.innerHTML = detailSkeleton();
+  const sr = await api.seriesById(sid);
+  if (!ctx.alive()) return;
+  if (!sr) return notFound(ctx);
+  reg([sr, ...sr.episodes]);
+  document.title = `${sr.title} — Lumen`;
+  const { byKey, last } = store.seriesProgress(sid);
+  const eps = sr.episodes;
+  // Resume where you left off; if you finished that one, start the next.
+  let resume = last ? eps.find((e) => e.key === last.item.key) : null;
+  if (resume && last.t / last.d >= 0.95) resume = eps[eps.indexOf(resume) + 1] || resume;
+  const start = resume || eps[0];
+  const epLabel = (e) => (e.s && e.e ? `S${e.s} · E${e.e}` : 'Episode');
+  const watched = eps.filter((e) => byKey[e.key] && byKey[e.key].t / byKey[e.key].d >= 0.95).length;
+  const seasonIdx = Math.max(0, sr.seasons.findIndex((x) => x.eps.includes(start)));
+
+  ctx.el.innerHTML = `<div class="view view--flush detail">
+    <div class="detail__backdrop ${sr.backdrop ? 'detail__backdrop--sharp' : ''}"><img src="${esc(sr.backdrop || sr.posterHd || '')}" alt=""></div>
+    <div class="container">
+      <div class="detail__hero">
+        <div class="detail__poster" data-tilt><div class="tilt">${sr.posterHd ? `<img src="${esc(sr.posterHd)}" alt="${esc(sr.title)} poster" data-morph>` : `<div class="card__fallback">${esc(sr.title)}</div>`}<div class="tilt__glare"></div></div></div>
+        <div class="detail__info">
+          <div class="eyebrow">Classic TV · <span style="color:#7ee2a0">Free to watch</span></div>
+          <h1 class="detail__title ${sr.logo ? 'has-logo' : ''}">${sr.logo ? `<img class="detail__logo" src="${esc(sr.logo)}" alt="${esc(sr.title)}">` : esc(sr.title)}</h1>
+          <div class="chips">${[sr.year, sr.network, `${eps.length} episodes`, sr.nseasons ? `${sr.nseasons} season${sr.nseasons > 1 ? 's' : ''}` : ''].filter(Boolean).map(esc).join('<span class="dot"></span>')}${sr.genres.length ? `<span class="dot"></span>${esc(sr.genres.join(', '))}` : ''}</div>
+          ${Object.keys(sr.rating).length ? `<div class="scores">${ratingBadges(sr.rating)}</div>` : ''}
+          <div class="detail__actions">
+            <button class="btn btn--primary" data-ep-play="${esc(start.key)}">${icon('play')} ${resume ? `Resume ${epLabel(start)}` : `Play ${epLabel(start)}`}</button>
+            ${listButton(sr)}
+            <button class="btn btn--glass btn--round" data-share aria-label="Share">${icon('share')}</button>
+          </div>
+          ${watched ? `<div class="series-progress"><i style="width:${(watched / eps.length) * 100}%"></i></div><small class="series-progress__label">${watched} of ${eps.length} watched</small>` : ''}
+        </div>
+      </div>
+      <div class="detail__body detail__body--wide">
+        <div>
+          <h2 class="section-title">About</h2>
+          <p class="prose">${esc(sr.overview || 'Vintage episodes from the Internet Archive.')}</p>
+          <h2 class="section-title" style="margin-top:36px">Episodes</h2>
+          <div class="pills" data-seasons style="margin-bottom:12px">${sr.seasons.map((x, i) => `<button class="pill ${i === seasonIdx ? 'is-active' : ''}" data-season="${i}">${esc(x.label)} <small>${x.eps.length}</small></button>`).join('')}</div>
+          <div class="episodes" data-episodes></div>
+          <p class="page-sub" style="font-size:13px;margin-top:20px">Episodes stream from the Internet Archive’s classic TV collection; many episodes of this series are in the U.S. public domain. Rights are as listed on each Archive item.</p>
+        </div>
+      </div>
+    </div>
+    ${footer()}
+  </div>`;
+  if (ctx.morph) ctx.el.querySelector('[data-morph]')?.style.setProperty('view-transition-name', 'poster-morph');
+  setAmbient(sr.poster);
+  wireTilt(ctx.el);
+
+  const box = ctx.el.querySelector('[data-episodes]');
+  const renderSeason = (i) => {
+    box.innerHTML = sr.seasons[i].eps.map((e) => {
+      const p = byKey[e.key];
+      const pct = p ? Math.min(100, (p.t / p.d) * 100) : 0;
+      const done = pct >= 95;
+      return `<button class="ep ep--play ${e.key === start.key ? 'is-next' : ''}" data-ep-play="${esc(e.key)}" data-launch-key="${esc(e.key)}">
+        <div class="ep__img">${e.still ? `<img src="${esc(e.still)}" alt="" loading="lazy">` : ''}<span class="ep__playicon">${icon(done ? 'check' : 'play')}</span>
+          ${p && !done ? `<span class="ep__bar"><i style="width:${pct}%"></i></span>` : ''}</div>
+        <div><div class="ep__num">${esc(epLabel(e))}${e.air ? ' · ' + new Date(e.air).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}${e.length ? ` · ${Math.round(e.length / 60)} min` : ''}${p && !done ? ` · ${Math.max(1, Math.round((p.d - p.t) / 60))} min left` : done ? ' · Watched' : ''}</div>
+        <div class="ep__title">${esc(e.title)}</div>${e.overview ? `<p class="ep__text">${esc(e.overview)}</p>` : ''}</div>
+      </button>`;
+    }).join('');
+  };
+  renderSeason(seasonIdx);
+  ctx.el.querySelector('[data-seasons]').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-season]');
+    if (!b) return;
+    ctx.el.querySelectorAll('[data-season]').forEach((x) => x.classList.toggle('is-active', x === b));
+    renderSeason(+b.dataset.season);
+  });
+  ctx.el.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ep-play]');
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const ep = eps.find((x) => x.key === b.dataset.epPlay);
+    if (ep) ctx.play(ep, { from: b.querySelector('.ep__img') || b, queue: eps });
+  });
+  ctx.el.querySelector('[data-share]').addEventListener('click', () => ctx.share(sr));
 }
