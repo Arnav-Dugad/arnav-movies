@@ -4,10 +4,13 @@ import * as api from './api.js';
 import { store } from './store.js';
 import {
   esc, icon, posterCard, wideCard, rankCard, row, skeletonRow, wireRows, wireTilt, listButton,
-  metaLine, fmtRuntime, fmtHours, setAmbient, emptyState, footer, ratingBadges, openTrailer, ytEmbed, kenBurns,
+  metaLine, fmtRuntime, fmtHours, setAmbient, emptyState, footer, ratingBadges, openTrailer, ytEmbed, kenBurns, toast,
 } from './ui.js';
-import { similar, recommend, becauseYouWatched, becauseYouLikedActor, lumenPicks, dailyShuffle, hoursUntilMidnight } from './recs.js';
+import { similar, recommend, becauseYouWatched, becauseYouLikedActor, nightlyPicks, dailyShuffle, hoursUntilMidnight } from './recs.js';
 import { currentSeason, applySeason, daysUntil, particles } from './seasons.js';
+import { applyTheme } from './theme.js';
+import { soundsOn, setSounds } from './audio.js';
+import { show as showShortcuts } from './shortcuts.js';
 
 /* Item registry so global click handlers (play, My List) can find the full item for a card. */
 export const registry = new Map();
@@ -128,7 +131,7 @@ export async function home(ctx) {
   const heroPool = season && seasonal.length >= 6 ? dailyShuffle(seasonal.filter((f) => f.backdrop && f.overview), season.id).concat(ranked) : ranked;
   const heroItems = [...new Map(heroPool.filter((f) => (f.backdrop || f.posterHd) && f.overview).map((f) => [f.key, f])).values()].slice(0, 6);
   const cw = store.continueWatching();
-  const picks = lumenPicks(films);
+  const picks = nightlyPicks(films);
   const because = becauseYouWatched(films);
   const forYou = recommend(films);
   const actorRow = becauseYouLikedActor(films);
@@ -147,13 +150,13 @@ export async function home(ctx) {
       </div></div>
       ${season && seasonal.length >= 6 ? row({ title: season.title, sub: (() => { const d = daysUntil(season); return d > 0 ? `${d} day${d > 1 ? 's' : ''} to ${season.countdownLabel} · ${season.sub}` : d === 0 ? `Happy ${season.countdownLabel}!` : season.sub; })(), more: `/collection/${season.id === 'holidays' ? 'christmas' : season.id === 'valentines' ? 'romance' : 'halloween'}`, variant: 'wide', cards: dailyShuffle(seasonal, season.id).slice(0, 24).map((f) => wideCard(f)).join('') }) : ''}
       ${cw.length ? row({ title: 'Continue Watching', variant: 'wide', cards: cw.map((p) => wideCard(reg([registry.get(p.item.key) || p.item])[0], p)).join('') }) : ''}
-      ${row({ title: 'Lumen Picks', sub: `Tonight’s selection · refreshes in ${hoursUntilMidnight()}h`, variant: 'wide', cards: picks.map((f) => wideCard(f)).join('') })}
+      ${row({ title: 'Arnav’s Picks', sub: `Tonight’s selection · refreshes in ${hoursUntilMidnight()}h`, variant: 'wide', cards: picks.map((f) => wideCard(f)).join('') })}
       ${because.map((b) => row({ title: `Because you watched ${b.seed.title}`, cards: b.items.map((f) => posterCard(f)).join('') })).join('')}
       ${actorRow ? row({ title: `Because you liked ${actorRow.actor.name}`, sub: 'More with them, free', more: actorRow.actor.qid ? `/person/${actorRow.actor.qid}` : '', cards: actorRow.items.map((f) => posterCard(f)).join('') }) : ''}
       ${forYou?.length ? row({ title: 'For You', sub: 'Based on what you watch and save', cards: forYou.map((f) => posterCard(f)).join('') }) : ''}
-      ${row({ title: 'Top 10 Free Classics', variant: 'rank', cards: top10.map((f, i) => rankCard(f, i + 1)).join('') })}
+      ${row({ title: 'Top 10 Classics', variant: 'rank', cards: top10.map((f, i) => rankCard(f, i + 1)).join('') })}
       ${row({ title: 'Browse Collections', variant: 'tiles', cards: Object.keys(COLLECTIONS).filter((t) => byTag(films, t).length >= 3).map((t) => tileHtml(t, films)).join('') })}
-      <div data-slot="tonight">${skeletonRow('Airing Tonight')}</div>
+      <div data-slot="newsreels">${skeletonRow('Newsreels', 6, true)}</div>
       ${r('horror')}
       <div data-slot="cartoons">${skeletonRow('Classic Cartoons', 6, true)}</div>
       ${r('hitchcock', 'Hitchcock in the Public Domain')}
@@ -161,12 +164,14 @@ export async function home(ctx) {
       ${r('noir')}
       ${r('chaplin', 'Charlie Chaplin')}
       ${r('keaton', 'Buster Keaton')}
-      <div data-slot="anime">${skeletonRow('Trending Anime')}</div>
+      <div data-slot="nasa">${skeletonRow('From NASA', 6, true)}</div>
       ${r('silentshorts')}
-      <div data-slot="series">${skeletonRow('Classic TV Series — Free')}</div>
+      <div data-slot="series">${skeletonRow('Classic TV Series')}</div>
       ${r('cult', 'Cult Classics')}
       ${r('scifi')}
-      <div data-slot="streaming">${skeletonRow('New on Streaming Today')}</div>
+      <div data-slot="cc">${skeletonRow('Creative Commons', 6, true)}</div>
+      <div data-slot="gov">${skeletonRow('Government Films', 6, true)}</div>
+      <div data-slot="prelinger">${skeletonRow('Prelinger Archives', 6, true)}</div>
       ${r('comedy', 'Laugh Out Loud')}
       ${r('western')}
       ${r('war')}
@@ -178,9 +183,15 @@ export async function home(ctx) {
   wireHero(ctx);
   if (season) ctx.onLeave(particles(ctx.el.querySelector('.hero'), season.particles));
 
-  api.airingTonight().then((shows) =>
-    fill(ctx, '[data-slot="tonight"]', shows.length ? row({ title: 'Airing Tonight', sub: `${new Date().toLocaleDateString(undefined, { weekday: 'long' })} · ${api.countryName(shows.country)}`, more: '/tv', cards: reg(shows.slice(0, 24)).map((s) => posterCard(s)).join('') }) : '')
-  ).catch(() => fill(ctx, '[data-slot="tonight"]', ''));
+  const sourceRow = (slot, key, title, sub, opts = {}) =>
+    api.sourceItems(key, { rows: 24, ...opts }).then(({ items }) =>
+      fill(ctx, `[data-slot="${slot}"]`, items.length ? row({ title, sub, more: `/movies?source=${key}`, variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }) : '')
+    ).catch(() => fill(ctx, `[data-slot="${slot}"]`, ''));
+  sourceRow('newsreels', 'newsreels', 'Newsreels', 'What audiences saw before the feature');
+  sourceRow('nasa', 'nasa', 'From NASA', 'Missions, launches and the view from orbit', { filter: 'apollo moon landing' });
+  sourceRow('cc', 'cc', 'Creative Commons', 'Open movies, free to watch and share');
+  sourceRow('gov', 'government', 'Government Films', 'Made by the U.S. government, owned by everyone');
+  sourceRow('prelinger', 'prelinger', 'Prelinger Archives', 'Ads, educational and industrial films');
 
   const toons = byTag(films, 'cartoons');
   (toons.length >= 6 ? Promise.resolve({ items: toons }) : api.iaSearch({ collection: 'classic_cartoons', rows: 24 })).then(({ items }) =>
@@ -191,21 +202,15 @@ export async function home(ctx) {
     fill(ctx, '[data-slot="vault"]', row({ title: 'Most Streamed in the Vault', sub: '28,000+ films on the Internet Archive', more: '/movies?tab=vault', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }))
   ).catch(() => fill(ctx, '[data-slot="vault"]', ''));
 
-  api.animeRows().then(({ trending }) =>
-    fill(ctx, '[data-slot="anime"]', row({ title: 'Trending Anime', sub: 'From AniList', more: '/tv#anime', cards: reg(trending).map((a) => posterCard(a)).join('') }))
-  ).catch(() => fill(ctx, '[data-slot="anime"]', ''));
 
   api.iaSearch({ collection: 'classic_tv', rows: 24 }).then(({ items }) =>
-    fill(ctx, '[data-slot="classictv"]', row({ title: 'Classic TV — Free', sub: 'Vintage episodes, ready to stream', more: '/tv#classic', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }))
+    fill(ctx, '[data-slot="classictv"]', row({ title: 'Classic TV', sub: 'Vintage episodes, ready to stream', more: '/tv#classic', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }))
   ).catch(() => fill(ctx, '[data-slot="classictv"]', ''));
 
   api.series().then((list) =>
-    fill(ctx, '[data-slot="series"]', list.length ? row({ title: 'Classic TV Series — Free', sub: 'Whole seasons, in order', more: '/tv#series', cards: reg(list).map((s) => posterCard({ ...s, playable: false })).join('') }) : '')
+    fill(ctx, '[data-slot="series"]', list.length ? row({ title: 'Classic TV Series', sub: 'Whole seasons, in order', more: '/tv#series', cards: reg(list).map((s) => posterCard({ ...s, playable: false })).join('') }) : '')
   );
 
-  api.streamingToday().then((shows) =>
-    fill(ctx, '[data-slot="streaming"]', shows.length ? row({ title: 'New on Streaming Today', sub: 'Episodes dropping on Netflix, Prime, Disney+ and more', more: '/tv', cards: reg(shows.slice(0, 24)).map((s) => posterCard(s)).join('') }) : '')
-  ).catch(() => fill(ctx, '[data-slot="streaming"]', ''));
 }
 
 function hero(items, greet) {
@@ -218,7 +223,7 @@ function hero(items, greet) {
       <div class="hero__video" aria-hidden="true"></div>
       <div class="container hero__inner">
         <div class="hero__content">
-          <div class="hero__eyebrow">${icon('sparkles')} ${esc(greet)} · Free &amp; public domain</div>
+          <div class="hero__eyebrow">${icon('sparkles')} ${esc(greet)}</div>
           <h1 class="hero__title ${f.logo ? 'has-logo' : ''}">${titleArt(f, 'hero__logo')}</h1>
           <div class="chips">${ratingBadges(f.rating, { small: true })}${metaLine(f, { max: 3 })}${f.director[0] ? `<span class="dot"></span>${esc(f.director[0])}` : ''}</div>
           <p class="hero__overview">${esc(f.overview)}</p>
@@ -287,6 +292,7 @@ function wireHero(ctx) {
       bar.style.animation = '';
     });
     setAmbient(slides[i].dataset.src);
+    applyTheme(slides[i].dataset.src);
     remaining = DUR;
     if (heroEl.classList.contains('is-paused')) trailerTimer = setTimeout(startTrailer, 1400);
     else schedule();
@@ -339,8 +345,41 @@ function wireHero(ctx) {
   document.addEventListener('visibilitychange', onVis);
   ctx.onLeave(() => { clearTimeout(timer); stopTrailer(); document.removeEventListener('visibilitychange', onVis); });
   setAmbient(slides[0]?.dataset.src);
+  const untheme = applyTheme(slides[0]?.dataset.src);
+  ctx.onLeave(untheme);
   schedule();
   wireTilt(heroEl);
+  ctx.onLeave(heroParallax(heroEl));
+}
+
+/** Depth: backdrop, ambient light and content drift at different rates with the pointer and the scroll. */
+function heroParallax(heroEl) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return () => {};
+  let px = 0, py = 0, sy = 0, raf = 0;
+  const paint = () => {
+    raf = 0;
+    heroEl.style.setProperty('--px', px.toFixed(3));
+    heroEl.style.setProperty('--py', py.toFixed(3));
+    heroEl.style.setProperty('--sy', sy.toFixed(1));
+  };
+  const queue = () => (raf ||= requestAnimationFrame(paint));
+  const onMove = (e) => {
+    const r = heroEl.getBoundingClientRect();
+    px = (e.clientX - r.left) / r.width - 0.5;
+    py = (e.clientY - r.top) / r.height - 0.5;
+    queue();
+  };
+  const onScroll = () => {
+    sy = Math.min(scrollY, innerHeight);
+    queue();
+  };
+  heroEl.addEventListener('pointermove', onMove);
+  addEventListener('scroll', onScroll, { passive: true });
+  return () => {
+    heroEl.removeEventListener('pointermove', onMove);
+    removeEventListener('scroll', onScroll);
+    cancelAnimationFrame(raf);
+  };
 }
 
 /* ===================================================================== MOVIES */
@@ -359,12 +398,15 @@ const sortCurated = (list, sort) => {
   return by ? list.slice().sort(by) : list;
 };
 
+const NASA_TOPICS = ['Apollo', 'Moon landing', 'Mars', 'Hubble', 'Space Station', 'Space Shuttle', 'Earth from space', 'Artemis', 'Rockets', 'Solar system'];
+
 export async function movies(ctx) {
   const films = reg(await api.catalog());
   const params = new URLSearchParams(location.search);
+  const source = api.SOURCES[params.get('source')] ? params.get('source') : params.get('tab') === 'vault' ? 'vault' : 'curated';
   const state = {
-    tab: params.get('tab') === 'vault' ? 'vault' : 'curated',
-    g: COLLECTIONS[params.get('g')] ? params.get('g') : '',
+    source,
+    g: params.get('g') || '',
     d: params.get('d') || '',
     sort: SORTS[params.get('sort')] ? params.get('sort') : 'downloads',
   };
@@ -372,14 +414,11 @@ export async function movies(ctx) {
 
   ctx.el.innerHTML = `<div class="view"><div class="container">
     <header class="page-head">
-      <div><div class="eyebrow">Movies</div><h1 class="page-title">Free films, forever.</h1>
-      <p class="page-sub">${films.length.toLocaleString()} verified public-domain films, plus the Internet Archive’s 28,000-film vault. No accounts, no ads, no catch.</p></div>
-      <div class="segmented" data-seg><span class="segmented__thumb"></span>
-        <button data-tab="curated">Curated</button><button data-tab="vault">The Vault</button></div>
+      <div><div class="eyebrow">Movies</div><h1 class="page-title">Films, forever.</h1>
+      <p class="page-sub" data-sub></p></div>
     </header>
-    <div class="pills" data-genres style="margin-bottom:14px">
-      <button class="pill" data-g="">All</button>${tags.map((t) => `<button class="pill" data-g="${t}">${esc(COLLECTIONS[t].title)}</button>`).join('')}
-    </div>
+    <div class="pills pills--sources" data-sources role="tablist" style="margin-bottom:14px">${Object.entries(api.SOURCES).map(([k, v]) => `<button class="pill pill--source" role="tab" data-source="${k}">${esc(v.label)}</button>`).join('')}</div>
+    <div class="pills" data-genres style="margin-bottom:14px"></div>
     <div data-filters style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:26px">
       <select class="select" data-d aria-label="Decade"><option value="">Any decade</option>${DECADES.map((d) => `<option value="${d}">${d}s</option>`).join('')}</select>
       <select class="select" data-sort aria-label="Sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
@@ -389,14 +428,15 @@ export async function movies(ctx) {
   </div>${footer()}</div>`;
 
   const out = ctx.el.querySelector('[data-results]');
-  const seg = ctx.el.querySelector('[data-seg]');
+  const sourcesEl = ctx.el.querySelector('[data-sources]');
+  const genresEl = ctx.el.querySelector('[data-genres]');
   const filters = ctx.el.querySelector('[data-filters]');
   const count = ctx.el.querySelector('[data-count]');
   let io;
 
   const syncUrl = () => {
     const p = new URLSearchParams();
-    if (state.tab === 'vault') p.set('tab', 'vault');
+    if (state.source !== 'curated') p.set('source', state.source);
     if (state.g) p.set('g', state.g);
     if (state.d) p.set('d', state.d);
     if (state.sort !== 'downloads') p.set('sort', state.sort);
@@ -404,12 +444,25 @@ export async function movies(ctx) {
   };
 
   const paintControls = () => {
-    seg.querySelectorAll('button').forEach((b) => b.classList.toggle('is-active', b.dataset.tab === state.tab));
-    const active = seg.querySelector('.is-active');
-    const thumb = seg.querySelector('.segmented__thumb');
-    thumb.style.width = active.offsetWidth + 'px';
-    thumb.style.transform = `translateX(${active.offsetLeft - 4}px)`;
-    ctx.el.querySelectorAll('[data-g]').forEach((b) => b.classList.toggle('is-active', b.dataset.g === state.g));
+    sourcesEl.querySelectorAll('[data-source]').forEach((b) => {
+      const on = b.dataset.source === state.source;
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-selected', on);
+    });
+    const nasa = state.source === 'nasa';
+    const filmSource = state.source === 'curated' || state.source === 'vault';
+    ctx.el.querySelector('[data-sub]').textContent = state.source === 'curated'
+      ? `${films.length.toLocaleString()} verified public-domain films, hand-matched with posters, cast and scores.`
+      : api.SOURCES[state.source].sub + '.';
+    // Genres for film sources, topics for NASA, nothing for the special collections.
+    genresEl.innerHTML = nasa
+      ? NASA_TOPICS.map((t) => `<button class="pill ${state.g === t ? 'is-active' : ''}" data-g="${esc(t)}">${esc(t)}</button>`).join('')
+      : filmSource
+        ? `<button class="pill ${!state.g ? 'is-active' : ''}" data-g="">All</button>` + tags.map((t) => `<button class="pill ${state.g === t ? 'is-active' : ''}" data-g="${t}">${esc(COLLECTIONS[t].title)}</button>`).join('')
+        : '';
+    genresEl.hidden = !genresEl.innerHTML;
+    filters.querySelector('[data-d]').hidden = nasa;
+    filters.querySelector('[data-sort]').hidden = nasa;
     filters.querySelector('[data-d]').value = state.d;
     filters.querySelector('[data-sort]').value = state.sort;
   };
@@ -421,19 +474,19 @@ export async function movies(ctx) {
     list = sortCurated(list, state.sort);
     count.textContent = `${list.length.toLocaleString()} films`;
     if (!list.length) {
-      out.innerHTML = emptyState({ title: 'Nothing curated here yet', text: 'Switch to The Vault to explore thousands more films with these filters.' });
+      out.innerHTML = emptyState({ title: 'Nothing curated here yet', text: 'Try The Vault to explore thousands more films with these filters.' });
       return;
     }
     chunkedGrid(ctx, out, list, (f) => posterCard(f));
   };
 
-  const renderVault = () => {
+  const renderPaged = () => {
     io?.disconnect();
     out.innerHTML = `<div class="grid grid--wide" data-grid></div><div class="load-more"><div class="spinner"></div></div>`;
     const grid = out.querySelector('[data-grid]');
     const sentinel = out.querySelector('.load-more');
-    const c = COLLECTIONS[state.g];
-    const filter = [c?.ia, state.d ? `year:[${state.d} TO ${+state.d + 9}]` : ''].filter(Boolean).join(' AND ');
+    const c = state.source === 'vault' ? COLLECTIONS[state.g] : null;
+    const filter = state.source === 'nasa' ? state.g : [c?.ia && `(${c.ia})`, state.d ? `year:[${state.d} TO ${+state.d + 9}]` : ''].filter(Boolean).join(' AND ');
     const sort = { downloads: 'downloads desc', avg_rating: 'avg_rating desc', 'year-desc': 'year desc', 'year-asc': 'year asc', title: 'titleSorter asc' }[state.sort];
     let page = 1, total = Infinity, loading = false, loaded = 0;
     const token = {};
@@ -442,12 +495,14 @@ export async function movies(ctx) {
       if (loading || loaded >= total) return;
       loading = true;
       try {
-        const res = await api.iaSearch({ collection: c?.collection || 'feature_films', filter, sort, rows: 36, page });
+        const res = state.source === 'vault' && c?.collection
+          ? await api.iaSearch({ collection: c.collection, filter, sort, rows: 36, page })
+          : await api.sourceItems(state.source, { filter, sort, rows: 36, page });
         if (!ctx.alive() || out._token !== token) return;
         total = res.total;
         loaded += res.items.length;
         grid.insertAdjacentHTML('beforeend', reg(res.items).map((f) => wideCard(f)).join(''));
-        count.textContent = `${total.toLocaleString()} films`;
+        count.textContent = `${total.toLocaleString()} titles`;
         page++;
         if (loaded >= total || !res.items.length) sentinel.remove();
       } catch {
@@ -463,16 +518,20 @@ export async function movies(ctx) {
   };
 
   const render = () => {
+    if (state.source === 'nasa' && !NASA_TOPICS.includes(state.g)) state.g = NASA_TOPICS[0];
     syncUrl();
     paintControls();
-    state.tab === 'vault' ? renderVault() : renderCurated();
+    state.source === 'curated' ? renderCurated() : renderPaged();
   };
 
-  seg.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-tab]');
-    if (b && b.dataset.tab !== state.tab) { state.tab = b.dataset.tab; render(); }
+  sourcesEl.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-source]');
+    if (!b || b.dataset.source === state.source) return;
+    state.source = b.dataset.source;
+    state.g = '';
+    render();
   });
-  ctx.el.querySelector('[data-genres]').addEventListener('click', (e) => {
+  genresEl.addEventListener('click', (e) => {
     const b = e.target.closest('[data-g]');
     if (b) { state.g = b.dataset.g; render(); }
   });
@@ -537,7 +596,7 @@ export async function title(ctx, id) {
   }
   if (!ctx.alive()) return;
   reg([item]);
-  document.title = `${item.title} — Lumen`;
+  document.title = `${item.title} — Arnav Movies`;
   const p = store.progress(item.key);
   const pct = p ? Math.round((p.t / p.d) * 100) : 0;
   const films = await api.catalog();
@@ -569,13 +628,14 @@ export async function title(ctx, id) {
       <div class="detail__hero">
         <div class="detail__poster" data-tilt><div class="tilt">${item.posterHd || item.poster ? `<img src="${esc(item.posterHd || item.poster)}" alt="${esc(item.title)} poster" data-morph data-launch-key="${esc(item.key)}">` : `<div class="card__fallback">${esc(item.title)}</div>`}<div class="tilt__glare"></div></div></div>
         <div class="detail__info">
-          <div class="eyebrow">${isEp ? 'Classic TV' : 'Film'} · <span style="color:#7ee2a0">Free to watch</span></div>
+          <div class="eyebrow">${isEp ? 'Classic TV' : item.tags?.includes('short') ? 'Short film' : 'Film'}</div>
           <h1 class="detail__title ${item.logo ? 'has-logo' : ''}">${titleArt(item, 'detail__logo')}</h1>
           ${item.tagline ? `<p class="detail__tagline">${esc(item.tagline)}</p>` : ''}
           <div class="chips">${rel?.cert ? `<span class="cert" title="Certificate in ${esc(api.countryName(rel.country))}">${esc(rel.cert)}</span>` : ''}${metaLine(item, { max: 4 })}</div>
           ${Object.keys(item.rating || {}).length ? `<div class="scores">${ratingBadges(item.rating)}</div>` : ''}
           <div class="detail__actions">
             ${item.playable ? `<button class="btn btn--primary" data-play="${esc(item.id)}">${icon('play')} ${p && pct < 95 ? `Resume · ${pct}%` : 'Play'}</button>` : `<span class="btn btn--glass" aria-disabled="true">Not streamable</span>`}
+            ${item.playable && !isEp && !item.tags?.includes('short') && (item.runtime || 0) >= 45 ? `<button class="btn btn--glass" data-programme title="Newsreel, cartoon, then the feature — like a 1940s picture house">${icon('film')} Full programme</button>` : ''}
             ${item.trailer ? `<button class="btn btn--glass" data-trailer-open="${esc(item.trailer)}">${icon('trailer')} Trailer</button>` : ''}
             ${listButton(item)}
             <button class="btn btn--glass btn--round" data-share aria-label="Share">${icon('share')}</button>
@@ -608,6 +668,8 @@ export async function title(ctx, id) {
   </div>`;
   if (ctx.morph) ctx.el.querySelector('[data-morph]')?.style.setProperty('view-transition-name', 'poster-morph');
   setAmbient(item.poster);
+  ctx.onLeave(applyTheme(item.poster));
+  ctx.el.querySelector('[data-programme]')?.addEventListener('click', (e) => playProgramme(ctx, item, e.currentTarget));
   // No trailer? Let the backdrop breathe with a slow Ken Burns slideshow of stills.
   if (!item.trailer && item.slides?.length > 1) {
     const bd = ctx.el.querySelector('.detail__backdrop');
@@ -638,11 +700,27 @@ export async function title(ctx, id) {
   }
 }
 
+/** A 1940s picture-house programme: an era newsreel, a cartoon, then the feature. */
+async function playProgramme(ctx, item, from) {
+  toast('Lining up a newsreel and a cartoon…', 'film');
+  const [reel, films] = await Promise.all([api.newsreelFor(item.year).catch(() => null), api.catalog()]);
+  const toons = films.filter((f) => f.tags.includes('animation') && f.tags.includes('short') && f.key !== item.key);
+  const y = item.year || 1940;
+  const toon = toons.sort((a, b) => Math.abs((a.year || y) - y) - Math.abs((b.year || y) - y)).slice(0, 6)[Math.floor(Math.random() * Math.min(6, toons.length))];
+  const queue = [
+    reel && { ...reel, programme: true, programmeLabel: 'Newsreel' },
+    toon && { ...toon, programme: true, programmeLabel: 'Cartoon' },
+    { ...item, programme: true, programmeLabel: 'Feature presentation' },
+  ].filter(Boolean);
+  reg(queue);
+  ctx.play(queue[0], { from, queue });
+}
+
 /* =================================================================== MY LIST */
 export async function myList(ctx) {
   const films = await api.catalog();
   const byKey = new Map(films.map((f) => [f.key, f]));
-  const list = reg(store.list().map((x) => byKey.get(x.key) || x));
+  const list = reg(store.list().map((x) => byKey.get(x.key) || x).filter((x) => x.playable !== false && x.kind !== 'show' && x.kind !== 'anime'));
   const cw = store.continueWatching();
   const st = store.stats();
   const max = Math.max(...st.last7.map((d) => d.sec), 60);
@@ -651,7 +729,7 @@ export async function myList(ctx) {
   const fmtLong = (d) => d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
 
   ctx.el.innerHTML = `<div class="view"><div class="container">
-    <header class="page-head"><div><div class="eyebrow">My Lumen</div><h1 class="page-title">Your screening room.</h1>
+    <header class="page-head"><div><div class="eyebrow">My List</div><h1 class="page-title">Your screening room.</h1>
       <p class="page-sub">Saved titles, progress and viewing stats live privately in this browser.</p></div></header>
 
     <section class="stats" aria-label="Viewing stats">
@@ -679,11 +757,69 @@ export async function myList(ctx) {
     <div class="container">
       <h2 class="section-title">Saved</h2>
       ${list.length
-        ? `<div class="grid">${list.map((x) => posterCard({ ...x, playable: x.playable ?? (x.kind !== 'show' && x.kind !== 'anime') })).join('')}</div>`
+        ? `<div class="grid">${list.map((x) => posterCard(x)).join('')}</div>`
         : emptyState({ iconName: 'bookmark', title: 'Nothing saved yet', text: 'Tap + on any film, show or anime to keep it here for later.', action: '<a class="btn btn--primary" href="/movies">Browse movies</a>' })}
+    </div>
+    <div class="container" style="margin-top:48px">
+      <h2 class="section-title">Settings</h2>
+      <div class="settings glass">
+        <label class="setting"><span><strong>Sound cues</strong><small>Soft taps, panned to where you touch</small></span><input type="checkbox" data-pref="uiSounds" ${soundsOn() ? 'checked' : ''} switch></label>
+        <label class="setting"><span><strong>Cinema curtain</strong><small>Curtains part when playback starts</small></span><input type="checkbox" data-pref="curtain" ${store.pref('curtain', true) ? 'checked' : ''} switch></label>
+        <label class="setting"><span><strong>Smart Speed</strong><small>Skims long silences between lines</small></span><input type="checkbox" data-pref="smartSpeed" ${store.pref('smartSpeed', false) ? 'checked' : ''} switch></label>
+        <label class="setting"><span><strong>Autoplay next</strong><small>Episodes and programme reels</small></span><input type="checkbox" data-pref="autoplay" ${store.pref('autoplay', true) ? 'checked' : ''} switch></label>
+        <button class="setting setting--btn" data-shortcuts><span><strong>Keyboard shortcuts</strong><small>Press ? anywhere</small></span>${icon('right')}</button>
+      </div>
     </div>
   </div>${footer()}</div>`;
   wireRows(ctx.el);
+  ctx.el.querySelector('.settings').addEventListener('change', (e) => {
+    const k = e.target.dataset.pref;
+    if (!k) return;
+    if (k === 'uiSounds') setSounds(e.target.checked);
+    else store.setPref(k, e.target.checked);
+    toast(`${e.target.closest('.setting').querySelector('strong').textContent} ${e.target.checked ? 'on' : 'off'}`);
+  });
+  ctx.el.querySelector('[data-shortcuts]').addEventListener('click', () => showShortcuts());
+}
+
+/* ============================================================ NASA WATCH PAGE */
+export async function nasaView(ctx, id) {
+  ctx.el.innerHTML = detailSkeleton();
+  let item;
+  try {
+    item = await api.nasaItem(id);
+  } catch {
+    return ctx.alive() && notFound(ctx);
+  }
+  if (!ctx.alive()) return;
+  reg([item]);
+  document.title = `${item.title} — Arnav Movies`;
+  const related = await api.nasaSearch(item.title.split(/[:\-–]/)[0], { rows: 18 }).then((r) => reg(r.items.filter((x) => x.key !== item.key))).catch(() => []);
+  if (!ctx.alive()) return;
+  ctx.el.innerHTML = `<div class="view view--flush detail">
+    <div class="detail__backdrop detail__backdrop--sharp"><img src="${esc(item.backdrop)}" alt=""></div>
+    <div class="container">
+      <div class="detail__hero detail__hero--wide">
+        <div class="detail__info">
+          <div class="eyebrow">NASA · ${esc(item.credit || 'Public domain')}</div>
+          <h1 class="detail__title">${esc(item.title)}</h1>
+          <div class="chips">${item.year ? esc(item.year) : ''}</div>
+          <div class="detail__actions">
+            <button class="btn btn--primary" data-play="${esc(item.key)}" data-launch-key="${esc(item.key)}">${icon('play')} Play</button>
+            ${listButton(item)}
+            <button class="btn btn--glass btn--round" data-share aria-label="Share">${icon('share')}</button>
+          </div>
+        </div>
+      </div>
+      <div class="detail__body detail__body--wide"><div><h2 class="section-title">About</h2><p class="prose">${esc(item.overview || 'Footage from NASA’s public archive.')}</p>
+        <div class="links"><a class="btn btn--glass btn--sm" href="https://images.nasa.gov/details/${encodeURIComponent(item.id)}" target="_blank" rel="noopener">NASA Image and Video Library ${icon('external')}</a></div></div></div>
+    </div>
+    <div class="rows" style="margin-top:48px">${related.length ? row({ title: 'More from NASA', variant: 'wide', cards: related.map((f) => wideCard(f)).join('') }) : ''}</div>
+    ${footer()}
+  </div>`;
+  wireRows(ctx.el);
+  ctx.onLeave(applyTheme(item.poster));
+  ctx.el.querySelector('[data-share]').addEventListener('click', () => ctx.share(item));
 }
 
 /* ================================================================== 404 */

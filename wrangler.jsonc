@@ -1,7 +1,7 @@
 {
   // Cloudflare Workers (free plan): static site in ./public plus a small API in worker.js.
   // Secrets: `npx wrangler secret put TMDB_KEY` (optional: OPENSUBTITLES_KEY).
-  "name": "lumen-cinema",
+  "name": "arnav-movies",
   "main": "worker.js",
   "compatibility_date": "2026-10-01",
   "assets": {
@@ -12,7 +12,7 @@
     "run_worker_first": ["/api/*", "/__scheduled"]
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "lumen-health", "database_id": "478774cd-836d-420f-8909-f0af5241da91" }
+    { "binding": "DB", "database_name": "arnav-movies-db", "database_id": "dd5b1133-c303-429b-ad4e-a05cddf8fb65" }
   ],
   "ai": { "binding": "AI" },
   "triggers": { "crons": ["*/30 * * * *"] },

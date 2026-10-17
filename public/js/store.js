@@ -1,7 +1,7 @@
 // Per-viewer state kept in localStorage: My List, playback progress and viewing stats.
 // Everything is wrapped so the app still works in private windows where storage throws.
 
-const KEY = 'lumen:v1';
+const KEY = 'arnav:v1';
 const listeners = new Set();
 
 const blank = () => ({ list: [], progress: {}, days: {}, genres: {}, prefs: {}, nope: {} });

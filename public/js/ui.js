@@ -1,6 +1,7 @@
 // Shared UI: icons, safe templating, cards, rows, previews, trailers, toasts and ambient color.
 import { store } from './store.js';
 import { iaStream, iaItem } from './api.js';
+import { cue } from './audio.js';
 
 export const esc = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -40,6 +41,7 @@ const P = {
   next: '<path d="M5 5v14l10-7Z" fill="currentColor" stroke="none"/><path d="M19 5v14"/>',
   trailer: '<rect x="2.5" y="5" width="19" height="14" rx="3.5"/><path d="M10 9.2v5.6l4.8-2.8Z" fill="currentColor" stroke="none"/>',
   pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
+  bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/>',
 };
 
 export const icon = (name, cls = '') =>
@@ -48,6 +50,12 @@ export const icon = (name, cls = '') =>
 export const haptic = (pattern = 8) => {
   try { navigator.vibrate?.(pattern); } catch {}
 };
+
+/** Haptics plus a spatial sound cue panned to where the element sits on screen. */
+export function feedback(kind, el, pattern = 8) {
+  haptic(pattern);
+  cue(kind, el);
+}
 
 export const fmtRuntime = (m) => (m ? (m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m} min`) : '');
 export const fmtTime = (s) => {
@@ -97,7 +105,6 @@ export function posterCard(item, { badge = true } = {}) {
     <div class="card__media">
       ${fallback(item)}
       ${img(item.poster, item.title)}
-      ${badge && item.playable ? `<span class="card__badge badge badge--free">Free</span>` : ''}
       ${item.playable ? `<span class="card__play" data-play="${esc(item.id)}" aria-label="Play ${esc(item.title)}">${icon('play')}</span>` : ''}
     </div>
     <div class="card__meta"><div class="card__title">${esc(item.title)}</div><div class="card__sub">${esc(sub)}</div></div>
@@ -176,6 +183,37 @@ export function wireRows(root) {
     next.addEventListener('click', () => go(1));
     track.addEventListener('scroll', () => (raf ||= requestAnimationFrame(update)), { passive: true });
     requestAnimationFrame(update);
+  });
+}
+
+/* ------------------------------------------------- horizontal scroll buttons */
+const STRIPS = '.pills, .moods, .cast, .scenes__strip, .people, .panel__chips--scroll';
+const canHover = matchMedia('(hover: hover) and (pointer: fine)');
+
+/** Wraps every overflowing horizontal strip in `root` with ‹ › buttons (desktop only). */
+export function wireScrollers(root = document) {
+  if (!canHover.matches) return;
+  root.querySelectorAll(STRIPS).forEach((strip) => {
+    if (strip.closest('.hs') || strip.dataset.hs) return;
+    strip.dataset.hs = '1';
+    const wrap = document.createElement('div');
+    wrap.className = 'hs';
+    strip.parentNode.insertBefore(wrap, strip);
+    wrap.appendChild(strip);
+    wrap.insertAdjacentHTML('beforeend', `<button class="hs__btn hs__btn--prev" aria-label="Scroll left" tabindex="-1">${icon('left')}</button><button class="hs__btn hs__btn--next" aria-label="Scroll right" tabindex="-1">${icon('right')}</button>`);
+    const [prev, next] = wrap.querySelectorAll('.hs__btn');
+    const update = () => {
+      const over = strip.scrollWidth > strip.clientWidth + 4;
+      wrap.classList.toggle('is-overflow', over);
+      prev.disabled = strip.scrollLeft < 6;
+      next.disabled = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 6;
+    };
+    const go = (d) => strip.scrollBy({ left: d * Math.max(200, strip.clientWidth * 0.7), behavior: 'smooth' });
+    prev.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); go(-1); });
+    next.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); go(1); });
+    strip.addEventListener('scroll', update, { passive: true });
+    new ResizeObserver(update).observe(strip);
+    update();
   });
 }
 
@@ -302,7 +340,8 @@ export function listButton(item, { small = false } = {}) {
 const colorCache = new Map();
 
 export function sampleColors(src) {
-  if (!src) return Promise.resolve(null);
+  // Only hosts that send CORS headers can be read back from a canvas (NASA's image server doesn't).
+  if (!src || !/^(\/|https:\/\/(image\.tmdb\.org|archive\.org|[\w-]+\.archive\.org)\/)/.test(src)) return Promise.resolve(null);
   if (colorCache.has(src)) return colorCache.get(src);
   const p = new Promise((resolve) => {
     const im = new Image();
@@ -385,6 +424,6 @@ export function emptyState({ iconName = 'film', title, text, action = '' }) {
 }
 
 export const footer = () => `<footer class="footer"><div class="footer__inner">
-  <div>Lumen hosts no video. Curated titles are U.S. public domain; everything plays straight from the <a href="https://archive.org/details/feature_films" target="_blank" rel="noopener">Internet Archive</a>, which handles rights and takedowns.</div>
-  <div>Metadata: <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a> (not endorsed or certified by TMDB) · <a href="https://www.tvmaze.com" target="_blank" rel="noopener">TVMaze</a> · <a href="https://anilist.co" target="_blank" rel="noopener">AniList</a> · <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a> · Where-to-watch by JustWatch · <a href="/status">Stream status</a></div>
+  <div>Arnav Movies hosts no video. Everything here is public domain or openly licensed and plays straight from the <a href="https://archive.org" target="_blank" rel="noopener">Internet Archive</a> or <a href="https://images.nasa.gov" target="_blank" rel="noopener">NASA</a>, which handle rights and takedowns.</div>
+  <div>Metadata: <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a> (not endorsed or certified by TMDB) · <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a> · Video: <a href="https://archive.org" target="_blank" rel="noopener">Internet Archive</a> &amp; <a href="https://images.nasa.gov" target="_blank" rel="noopener">NASA</a> · <a href="/status">Stream status</a></div>
 </div></footer>`;

@@ -25,16 +25,18 @@ export async function personView(ctx, qid) {
     return ctx.alive() && notFound(ctx);
   }
   if (!ctx.alive()) return;
-  document.title = `${p.name} — Lumen`;
+  document.title = `${p.name} — Arnav Movies`;
   const byImdb = new Map(films.filter((f) => f.imdb).map((f) => [f.imdb, f]));
   const free = new Map();
   p.films.forEach((f) => f.imdb && byImdb.has(f.imdb) && free.set(byImdb.get(f.imdb).key, byImdb.get(f.imdb)));
   films.forEach((f) => (f.people.some((x) => x.qid === qid) || f.directors.some((d) => d.q === qid)) && free.set(f.key, f));
   const freeList = reg([...free.values()].sort((a, b) => (a.year || 0) - (b.year || 0)));
-  const freeImdb = new Set(freeList.map((f) => f.imdb));
   const a = age(p.born, p.died);
+  // Only what can actually be streamed here: their films in our catalog, with roles from Wikidata.
+  const rolesByImdb = new Map(p.films.filter((f) => f.imdb).map((f) => [f.imdb, f.roles]));
+  const watchable = freeList.map((f) => ({ year: f.year, title: f.title, href: f.href, roles: rolesByImdb.get(f.imdb) || (f.directors.some((d) => d.q === qid) ? ['Director'] : ['Actor']) }));
   const decades = new Map();
-  p.films.forEach((f) => {
+  watchable.forEach((f) => {
     const d = f.year ? Math.floor(f.year / 10) * 10 + 's' : 'Undated';
     if (!decades.has(d)) decades.set(d, []);
     decades.get(d).push(f);
@@ -53,7 +55,7 @@ export async function personView(ctx, qid) {
           ${p.died ? `<span class="dot"></span><span>Died ${esc(fmtDate(p.died))}${a != null ? ` (aged ${a})` : ''}</span>` : a != null ? `<span class="dot"></span><span>Age ${a}</span>` : ''}
         </div>
         <div class="links">
-          ${freeList.length ? `<span class="badge badge--free">${freeList.length} free to watch</span>` : ''}
+          ${freeList.length ? `<span class="badge">${freeList.length} film${freeList.length > 1 ? 's' : ''} to watch</span>` : ''}
           ${p.wiki ? `<a class="btn btn--glass btn--sm" href="${esc(p.wiki)}" target="_blank" rel="noopener">Wikipedia ${icon('external')}</a>` : ''}
           <a class="btn btn--glass btn--sm" href="https://www.wikidata.org/wiki/${esc(qid)}" target="_blank" rel="noopener">Wikidata ${icon('external')}</a>
         </div>
@@ -62,14 +64,12 @@ export async function personView(ctx, qid) {
     ${p.bio ? `<p class="prose" style="max-width:72ch;margin-top:28px">${esc(p.bio)}</p>` : ''}
   </div>
   <div class="rows" style="margin-top:44px">
-    ${freeList.length ? row({ title: 'Watch Free on Lumen', sub: `${freeList.length} public-domain title${freeList.length > 1 ? 's' : ''}`, cards: freeList.map((f) => posterCard(f)).join('') }) : ''}
+    ${freeList.length ? row({ title: `Watch ${p.name}`, sub: `${freeList.length} title${freeList.length > 1 ? 's' : ''} streaming now`, cards: freeList.map((f) => posterCard(f)).join('') }) : ''}
     <div class="container">
-      <h2 class="section-title">Filmography <small style="color:var(--text-3);font-weight:500;font-size:14px">${p.films.length} titles</small></h2>
-      ${p.films.length ? [...decades].map(([d, list]) => `<section class="filmo"><h3>${esc(d)}</h3><ul>${list.map((f) => {
-        const isFree = f.imdb && freeImdb.has(f.imdb);
-        const href = isFree ? byImdb.get(f.imdb).href : f.imdb ? `https://www.imdb.com/title/${f.imdb}/` : `https://www.wikidata.org/wiki/${f.qid}`;
-        return `<li><a href="${esc(href)}" ${isFree ? '' : 'target="_blank" rel="noopener"'}><span class="filmo__year">${f.year || '—'}</span><span class="filmo__title">${esc(f.title)}</span><span class="filmo__roles">${esc(f.roles.join(', '))}</span>${isFree ? '<span class="badge badge--free">Free</span>' : `<span class="filmo__ext">${icon('external')}</span>`}</a></li>`;
-      }).join('')}</ul></section>`).join('') : emptyState({ title: 'No filmography yet', text: 'Wikidata doesn’t list any films for this person.' })}
+      <h2 class="section-title">Filmography on Arnav Movies <small style="color:var(--text-3);font-weight:500;font-size:14px">${watchable.length} title${watchable.length === 1 ? '' : 's'}</small></h2>
+      ${watchable.length ? [...decades].sort((a, b) => b[0].localeCompare(a[0])).map(([d, list]) => `<section class="filmo"><h3>${esc(d)}</h3><ul>${list.sort((a, b) => (b.year || 0) - (a.year || 0)).map((f) =>
+        `<li><a href="${esc(f.href)}"><span class="filmo__year">${f.year || '—'}</span><span class="filmo__title">${esc(f.title)}</span><span class="filmo__roles">${esc(f.roles.join(', '))}</span><span class="filmo__ext">${icon('play')}</span></a></li>`
+      ).join('')}</ul></section>`).join('') : emptyState({ title: 'Nothing to stream yet', text: `None of ${p.name}’s films are in the public-domain catalog yet.` })}
     </div>
   </div>${footer()}</div>`;
   if (photo) setAmbient(photo);

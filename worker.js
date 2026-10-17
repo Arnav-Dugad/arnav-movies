@@ -1,10 +1,12 @@
-// Lumen edge worker (Cloudflare free plan).
+// Arnav Movies edge worker (Cloudflare free plan).
 //   /api/tmdb/*      cached TMDB proxy (key stays server-side)
 //   /api/geo         viewer country from Cloudflare
 //   /api/subs/ia     Internet Archive .srt -> WebVTT (Archive storage nodes send no CORS headers)
 //   /api/subs/os     OpenSubtitles -> WebVTT, persisted in D1 (enabled when OPENSUBTITLES_KEY is set)
 //   /api/subs/langs  languages OpenSubtitles has for a film
 //   /api/subs/translate  Workers AI translation of caption chunks, persisted in D1
+//   /api/quote       search what's said: full-text search over film and TV captions (D1 FTS5)
+//   /api/marks       crowd-sourced skip points (end of opening titles, start of credits)
 //   /api/report      playback events from the player (stream failures, recoveries)
 //   /api/health      stream-health dashboard data; /api/health/dead feeds the player
 //   scheduled()      checks every catalog file on a rolling basis and records dead streams
@@ -145,6 +147,56 @@ async function api(request, url, env, ctx) {
     return out ? json(out) : json({ error: 'translation failed' }, 502);
   }
 
+  if (path === 'quote') {
+    // "The film where someone says…": phrase match first, then all words, over ~3-minute caption windows.
+    if (!env.DB) return json([], 200, 60);
+    const q = (url.searchParams.get('q') || '').replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (q.length < 3) return json([]);
+    return cached(request, ctx, 86400, async () => {
+      const words = q.split(' ').filter((w) => w.length > 1).map((w) => '"' + w.replace(/"/g, '') + '"');
+      const run = (match) =>
+        env.DB.prepare(
+          "SELECT item, title, year, t, snippet(quotes, 0, char(1), char(2), '…', 18) AS snip FROM quotes WHERE quotes MATCH ? ORDER BY rank LIMIT 24"
+        ).bind(match).all().then((r) => r.results).catch(() => []);
+      // Exact phrase, then the words close together (captions are often paraphrased or misheard), then anywhere in the window.
+      const tiers = words.length > 1 ? ['"' + q.replace(/"/g, '') + '"', `NEAR(${words.join(' ')}, ${words.length + 6})`, words.join(' AND ')] : words;
+      let rows = [];
+      for (const match of tiers) {
+        if (rows.length >= 8) break;
+        const seen = new Set(rows.map((r) => r.item + r.t));
+        rows = rows.concat((await run(match)).filter((r) => !seen.has(r.item + r.t)));
+      }
+      // One hit per title, best first.
+      const out = [], items = new Set();
+      for (const r of rows) {
+        if (items.has(r.item)) continue;
+        items.add(r.item);
+        out.push(r);
+      }
+      return json(out.slice(0, 12), 200, 86400);
+    });
+  }
+
+  if (path === 'marks') {
+    if (!env.DB) return json({}, 200, 300);
+    if (request.method === 'POST') {
+      const b = await request.json().catch(() => null);
+      if (!b || typeof b.id !== 'string' || b.id.length > 200 || !['intro', 'credits'].includes(b.kind) || !(b.t > 0 && b.t < 30000)) return json({ ok: false }, 400);
+      ctx.waitUntil(env.DB.prepare('INSERT INTO marks (item, kind, t, ts) VALUES (?, ?, ?, ?)').bind(b.id, b.kind, Math.round(b.t), Date.now()).run());
+      return json({ ok: true });
+    }
+    const id = url.searchParams.get('id') || '';
+    if (!id || id.length > 200) return json({}, 400);
+    // Median of what viewers chose, once at least three agree.
+    const { results } = await env.DB.prepare('SELECT kind, t FROM marks WHERE item = ? ORDER BY kind, t').bind(id).all();
+    const out = {};
+    for (const kind of ['intro', 'credits']) {
+      const ts = results.filter((r) => r.kind === kind).map((r) => r.t);
+      if (ts.length >= 3) out[kind] = { t: ts[Math.floor(ts.length / 2)], n: ts.length };
+    }
+    return json(out, 200, 600);
+  }
+
   if (path === 'report' && request.method === 'POST') {
     if (!env.DB) return json({ ok: false }, 503);
     const body = await request.json().catch(() => null);
@@ -197,7 +249,7 @@ async function api(request, url, env, ctx) {
 
 
 /* ------------------------------------------------------------- subtitles */
-const osHeaders = (env) => ({ 'Api-Key': env.OPENSUBTITLES_KEY, 'User-Agent': 'Lumen v1.0', Accept: 'application/json' });
+const osHeaders = (env) => ({ 'Api-Key': env.OPENSUBTITLES_KEY, 'User-Agent': 'ArnavMovies v1.0', Accept: 'application/json' });
 
 async function d1Sub(env, key) {
   if (!env.DB) return null;

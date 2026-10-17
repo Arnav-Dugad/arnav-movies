@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Lumen — design system
+   Arnav Movies — design system
    Dark, glassy, rounded. Every color is a token so themes stay one edit away.
    ========================================================================== */
 
@@ -1025,3 +1025,122 @@ body.is-shorts::before { display: none; }
   .detail .prose.is-open { display: block; -webkit-line-clamp: unset; }
   .detail .prose:not(.is-open)::after { content: ""; }
 }
+
+/* ========================================================================== v4 · Arnav Movies */
+
+/* Brand */
+.brand__name { font-weight: 600; }
+.brand__name b { font-weight: 800; background: var(--accent-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+
+/* Poster-matched page tint: theme.js re-sets the accent tokens; this is the wash behind everything. */
+body::before { content: ""; position: fixed; inset: -20vh -10vw auto; height: 90vh; z-index: -3; pointer-events: none;
+  background: radial-gradient(60% 60% at 30% 0%, rgba(var(--tint-rgb, 255, 179, 64), .16), transparent 70%); }
+.btn--primary, .pill.is-active, .mood--surprise, .card__progress i { transition: background .8s var(--ease), color .3s; }
+
+/* Hero parallax depth: backdrop, poster and copy drift at different rates. */
+.hero { --px: 0; --py: 0; --sy: 0; }
+.hero__bg { transform: translate3d(calc(var(--px) * -28px), calc(var(--py) * -18px + var(--sy) * .35px), 0); transition: transform .9s var(--ease); will-change: transform; }
+.hero__poster { transform: translate3d(calc(var(--px) * 22px), calc(var(--py) * 14px + var(--sy) * -.08px), 0); transition: transform .7s var(--ease); }
+.hero__content { transform: translate3d(calc(var(--px) * -8px), calc(var(--sy) * .12px), 0); opacity: calc(1 - var(--sy) / 900); transition: transform .7s var(--ease); }
+@media (prefers-reduced-motion: reduce) { .hero__bg, .hero__poster, .hero__content { transform: none; opacity: 1; } }
+
+/* Horizontal scroll buttons for every strip on desktop */
+.hs { position: relative; min-width: 0; }
+.hs__btn { position: absolute; z-index: 3; top: 50%; width: 34px; height: 34px; margin-top: -17px; border-radius: 50%; display: grid; place-items: center; color: #fff;
+  background: rgba(30,30,34,.72); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border: .5px solid var(--hairline-strong); box-shadow: 0 8px 24px -8px rgba(0,0,0,.7);
+  opacity: 0; pointer-events: none; transform: scale(.85); transition: opacity .25s var(--ease), transform .35s var(--spring), background .2s; }
+.hs__btn svg { width: 16px; height: 16px; }
+.hs__btn--prev { left: -6px; }
+.hs__btn--next { right: -6px; }
+.hs.is-overflow:hover .hs__btn:not([disabled]) { opacity: 1; pointer-events: auto; transform: none; }
+.hs__btn:hover { background: rgba(60,60,66,.9); }
+.hs__btn:active { transform: scale(.92); }
+.hs.is-overflow .pills, .hs.is-overflow .moods { -webkit-mask: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent); mask: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent); }
+@media (hover: none), (pointer: coarse) { .hs__btn { display: none; } }
+
+/* Source tabs on Movies */
+.pills--sources { padding: 5px; gap: 4px; border-radius: 999px; background: rgba(255,255,255,.06); border: .5px solid var(--hairline); width: max-content; max-width: 100%; }
+.pill--source { border: 0; background: none; }
+.pill--source.is-active { background: rgba(255,255,255,.95); color: #000; box-shadow: 0 6px 18px -8px rgba(0,0,0,.6); }
+.select[hidden], .pills[hidden] { display: none; }
+
+/* Dual subtitles: the stack moves as one, the learner line sits smaller underneath */
+.player__subs { position: absolute; z-index: 3; left: 6%; right: 6%; bottom: 8%; display: flex; flex-direction: column; align-items: center; gap: .35em; pointer-events: none; transition: bottom .35s var(--ease); }
+.player.show-ui .player__subs, .player.is-paused .player__subs { bottom: 20%; }
+.player__subs .player__cues { position: static; left: auto; right: auto; bottom: auto; width: 100%; transition: none; }
+.player__subs .player__cues--second { font-size: calc(clamp(13px, 1.75vw, 23px) * var(--sub-scale, 1)); color: #ffe39a; }
+.player__subs .player__cues--second:empty { display: none; }
+
+/* Cinema curtain */
+.player__curtain { position: absolute; inset: 0; display: flex; pointer-events: none; overflow: hidden; }
+.player__curtain i { flex: 1; height: 100%; transform-origin: top;
+  background: repeating-linear-gradient(90deg, rgba(0,0,0,.42) 0 3%, rgba(255,255,255,.05) 6%, rgba(0,0,0,.3) 9% 10%), linear-gradient(180deg, #8f1420, #5b0a12 60%, #2d0408);
+  box-shadow: inset 0 -40px 60px -20px rgba(0,0,0,.7); transition: transform 1.9s cubic-bezier(.6,.02,.2,1), filter 1.9s; }
+.player__curtain i:first-child { border-right: 1px solid rgba(0,0,0,.6); }
+.player__curtain::before { content: ""; position: absolute; inset: 0 0 auto; height: 8%; z-index: 2; border-radius: 0 0 40% 40% / 0 0 100% 100%;
+  background: linear-gradient(180deg, #7a0e18, #3a060c); box-shadow: 0 10px 30px rgba(0,0,0,.6); transition: transform 1.6s .4s var(--ease); }
+.player__marquee { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; max-width: 80%; text-align: center; font-family: Georgia, "Times New Roman", serif; font-style: italic;
+  font-size: clamp(22px, 4vw, 46px); color: #ffe2a3; text-shadow: 0 0 18px rgba(255, 196, 92, .7), 0 2px 0 #3a0a05; letter-spacing: .02em; transition: opacity .5s, transform 1s var(--ease); }
+.player.is-curtain-open .player__curtain i:first-child { transform: translateX(-104%) skewY(-2deg) scaleX(.6); filter: brightness(.6); }
+.player.is-curtain-open .player__curtain i:last-child { transform: translateX(104%) skewY(2deg) scaleX(.6); filter: brightness(.6); }
+.player.is-curtain-open .player__curtain::before { transform: translateY(-110%); }
+.player.is-curtain-open .player__marquee { opacity: 0; transform: translate(-50%, -60%) scale(.96); }
+.player.is-curtain-open .player__curtain { visibility: hidden; transition: visibility 0s 2.2s; }
+.player.no-curtain .player__curtain, .player.is-error .player__curtain, .player.is-casting .player__curtain { display: none; }
+
+/* Sleep: the picture fades to black, not just the sound */
+.player__sleep { position: absolute; inset: 0; z-index: 4; background: #000; opacity: 0; pointer-events: none; transition: opacity 1s linear; }
+
+/* Smart Speed chip */
+.smart-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; font-size: 12px; font-weight: 700; color: var(--accent); }
+.smart-chip svg { width: 14px; height: 14px; }
+.smart-chip[hidden] { display: none; }
+
+/* Trivia in the up-next card */
+.upnext__trivia { margin-top: 10px; padding-top: 10px; border-top: .5px solid var(--hairline-strong); font-size: 13px; line-height: 1.45; color: var(--text-2); max-width: 340px; animation: rise .5s var(--ease); }
+.upnext__trivia small { display: flex; align-items: center; gap: 5px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+.upnext__trivia[hidden] { display: none; }
+
+/* Search: what's said */
+.result--quote .result__img { aspect-ratio: 2 / 3; }
+.result__quote { font-size: 14px; line-height: 1.4; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-family: Georgia, "Times New Roman", serif; font-style: italic; }
+.result__quote mark { background: rgba(var(--tint-rgb, 255, 179, 64), .22); color: var(--accent); font-style: normal; border-radius: 3px; padding: 0 2px; }
+
+/* Keyboard shortcut sheet */
+.modal--sheet .modal__box.shortcuts { width: min(860px, 100%); max-height: min(86vh, 760px); overflow: auto; padding: 22px 26px 26px; background: rgba(28,28,32,.84); -webkit-backdrop-filter: blur(40px) saturate(180%); backdrop-filter: blur(40px) saturate(180%); }
+.shortcuts__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; font-size: 20px; letter-spacing: -.02em; }
+.shortcuts__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px 32px; }
+.shortcuts h3 { font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin: 12px 0 6px; }
+.shortcuts dl > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: .5px solid var(--hairline); font-size: 14px; }
+.shortcuts dt { display: flex; align-items: center; gap: 6px; flex: none; }
+.shortcuts dt span { font-size: 11px; color: var(--text-3); }
+.shortcuts dd { color: var(--text-2); text-align: right; }
+kbd { display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 7px; font: 600 12px/1 var(--font); color: var(--text);
+  background: linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.06)); border: .5px solid var(--hairline-strong); box-shadow: 0 2px 0 rgba(0,0,0,.45); }
+
+/* Settings (My List) and iOS-style switches everywhere */
+.settings { border-radius: var(--r-lg); padding: 4px 18px; max-width: 640px; }
+.setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 0; border: 0; border-bottom: .5px solid var(--hairline); width: 100%; text-align: left; color: inherit; font: inherit; background: none; cursor: pointer; }
+.setting:last-child { border-bottom: 0; }
+.setting strong { display: block; font-size: 15px; font-weight: 600; }
+.setting small { display: block; margin-top: 2px; font-size: 13px; color: var(--text-2); }
+.setting--btn svg { width: 18px; height: 18px; color: var(--text-3); }
+input[type="checkbox"][switch], .panel__toggle input[type="checkbox"][switch] { -webkit-appearance: none; appearance: none; flex: none; position: relative; width: 48px; height: 29px; border-radius: 999px; margin: 0;
+  background: rgba(120,120,128,.36); cursor: pointer; transition: background .3s var(--ease); }
+input[type="checkbox"][switch]::before { content: ""; position: absolute; top: 2px; left: 2px; width: 25px; height: 25px; border-radius: 50%; background: #fff; box-shadow: 0 3px 8px rgba(0,0,0,.3); transition: transform .35s var(--spring); }
+input[type="checkbox"][switch]:checked { background: #34c759; }
+input[type="checkbox"][switch]:checked::before { transform: translateX(19px); }
+input[type="checkbox"][switch]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* NASA watch page */
+.detail__hero--wide .detail__info { max-width: 760px; }
+
+/* Polish */
+::selection { background: rgba(var(--tint-rgb, 255, 179, 64), .35); }
+:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 3px; }
+.card:hover .card__media { box-shadow: 0 22px 50px -18px rgba(var(--tint-rgb, 0, 0, 0), .55), 0 0 0 .5px var(--hairline-strong); }
+.page-title { text-wrap: balance; }
+.prose, .hero__overview, .page-sub { text-wrap: pretty; }
+.upnext__trivia small svg { width: 12px; height: 12px; }
+.upnext__trivia p { margin: 0; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+@media (hover: none) { .setting[data-shortcuts] { display: none; } .setting:nth-last-child(2) { border-bottom: 0; } }

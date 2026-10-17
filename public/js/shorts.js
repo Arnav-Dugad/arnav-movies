@@ -135,7 +135,7 @@ export async function shorts(ctx) {
       const f = order.find((x) => x.key === e.target.closest('.short').dataset.key);
       const url = location.origin + f.href;
       try {
-        if (navigator.share) await navigator.share({ title: f.title, text: `Watch ${f.title} free on Lumen`, url });
+        if (navigator.share) await navigator.share({ title: f.title, text: `Watch ${f.title} on Arnav Movies`, url });
         else { await navigator.clipboard.writeText(url); toast('Link copied'); }
       } catch {}
       return;

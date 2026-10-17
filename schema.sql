@@ -1,4 +1,4 @@
--- Stream health store (Cloudflare D1, free tier). Apply: npx wrangler d1 execute lumen-health --remote --file schema.sql
+-- Arnav Movies data (Cloudflare D1, free tier). Apply: npx wrangler d1 execute arnav-movies-db --remote --file schema.sql
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -33,3 +33,13 @@ CREATE TABLE IF NOT EXISTS subs (
   body TEXT NOT NULL,
   ts INTEGER NOT NULL
 );
+
+-- Viewers' skips: where opening titles end and credits begin, aggregated to a median.
+CREATE TABLE IF NOT EXISTS marks (
+  id INTEGER PRIMARY KEY,
+  item TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  t INTEGER NOT NULL,
+  ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS marks_item ON marks (item);

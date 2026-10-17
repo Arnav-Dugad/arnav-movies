@@ -39,6 +39,10 @@ def split():
     stills_path = os.path.join(OUT, "stills", "index.json")
     stills = json.load(open(stills_path, encoding="utf-8")) if os.path.exists(stills_path) else {}
 
+    # Where opening titles end / closing credits start (scripts/build-marks.py).
+    marks_path = os.path.join(ROOT, ".cache", "marks.json")
+    marks = json.load(open(marks_path, encoding="utf-8")) if os.path.exists(marks_path) else {}
+
     shard_dir = os.path.join(OUT, "f")
     shutil.rmtree(shard_dir, ignore_errors=True)
     os.makedirs(shard_dir)
@@ -68,6 +72,7 @@ def split():
         with open(os.path.join(shard_dir, s + ".json"), "w", encoding="utf-8") as fh:
             detail = {k: f.get(k) for k in ("overview", "tagline", "cast", "country", "language", "wiki", "qid", "rel", "backdrops")}
             detail["stills"] = stills.get(f["id"], {}).get("kb", [])
+            detail["mk"] = marks.get(f["id"])
             json.dump({k: v for k, v in detail.items() if v not in (None, "", [], {})}, fh, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(OUT, "catalog.json"), "w", encoding="utf-8") as fh:
         json.dump({"generated": full.get("generated"), "films": lean}, fh, ensure_ascii=False, separators=(",", ":"))

@@ -1,16 +1,18 @@
 // App shell: router, view transitions (incl. poster morph), navigation chrome and global interactions.
 import * as views from './views.js';
 import { registry } from './views.js';
-import { tv, show, anime, seriesView } from './tv.js';
+import { tv, seriesView } from './tv.js';
 import { shorts } from './shorts.js';
 import { initHoverCards } from './hovercard.js';
 import { personView } from './people.js';
 import { statusView } from './status.js';
-import { catalog, resolveTitle, seriesById } from './api.js';
+import { catalog, resolveTitle, seriesById, nasaItem } from './api.js';
 import { store } from './store.js';
 import { play } from './player.js';
 import { initSearch, openSearch } from './search.js';
-import { icon, toast, haptic } from './ui.js';
+import { icon, toast, haptic, feedback, wireScrollers } from './ui.js';
+import { reset as resetTheme } from './theme.js';
+import { initShortcuts } from './shortcuts.js';
 import { dragDismiss } from './gestures.js';
 
 const view = document.getElementById('view');
@@ -22,8 +24,8 @@ const routes = [
   [/^\/list\/?$/, views.myList, 'list'],
   [/^\/collection\/([\w-]+)\/?$/, views.collection, 'movies'],
   [/^\/title\/(.+?)\/?$/, views.title, 'movies', true],
-  [/^\/show\/(t?\d+)\/?$/, show, 'tv', true],
-  [/^\/anime\/(\d+)\/?$/, anime, 'tv', true],
+  [/^\/(show|anime)\/.+$/, (ctx) => navigate('/tv', { replace: true }), 'tv'],
+  [/^\/watch\/nasa\/(.+?)\/?$/, views.nasaView, 'movies', true],
   [/^\/series\/([\w-]+)\/?$/, seriesView, 'tv', true],
   [/^\/shorts\/?$/, shorts, 'shorts'],
   [/^\/person\/(Q\d+)\/?$/, personView, ''],
@@ -37,11 +39,12 @@ async function render({ restoreScroll = 0, morph = false } = {}) {
   const my = ++token;
   leaveFns.forEach((fn) => fn());
   leaveFns = [];
+  resetTheme();
   const path = location.pathname;
   const match = routes.map(([re, fn, tab, detail]) => [path.match(re), fn, tab, detail]).find(([m]) => m);
   const [m, fn, tab, detail] = match || [null, views.notFound, '', false];
   setActiveTab(tab);
-  document.title = 'Lumen — Free classic cinema & TV';
+  document.title = 'Arnav Movies — Classic cinema & TV';
   const ctx = {
     el: view,
     morph,
@@ -65,6 +68,7 @@ async function render({ restoreScroll = 0, morph = false } = {}) {
     const page = view.querySelector('.detail');
     leaveFns.push(dragDismiss(page, { canStart: () => scrollY <= 0, onDismiss: goBack, threshold: 160 }));
   }
+  wireScrollers(view);
   hideSplash();
 }
 
@@ -84,7 +88,7 @@ export function navigate(href, { replace = false, from = null } = {}) {
   // Morph the clicked poster into the detail page when the destination renders quickly.
   const poster = from?.querySelector('.card__media img.is-loaded, .tile__img img');
   const key = from?.dataset.key;
-  const fast = key && (registry.get(key)?.source === 'catalog' || /^(tv|anime|tmdbtv):/.test(key));
+  const fast = key && (registry.get(key)?.source === 'catalog' || /^(ep|nasa):/.test(key));
   transition(() => render({ morph: !!(poster && fast) }), poster && fast ? poster : null);
 }
 
@@ -149,6 +153,11 @@ async function findItem(key) {
     if (ep) registry.set(key, ep);
     return ep || null;
   }
+  if (key.startsWith('nasa:')) {
+    const item = await nasaItem(key.slice(5)).catch(() => null);
+    if (item) registry.set(key, item);
+    return item;
+  }
   if (key.startsWith('ia:')) {
     const item = await resolveTitle(key.slice(3));
     registry.set(key, item);
@@ -165,7 +174,8 @@ document.addEventListener('click', async (e) => {
     e.preventDefault();
     e.stopPropagation();
     const v = playEl.dataset.play;
-    const item = await findItem(/^(ia|ep):/.test(v) ? v : 'ia:' + v);
+    const item = await findItem(/^(ia|ep|nasa):/.test(v) ? v : 'ia:' + v);
+    feedback('play', playEl, 10);
     if (!item) return;
     // The player grows out of whatever was tapped: a card, the hero, the poster.
     const from = playEl.closest('.card')?.querySelector('.card__media') || playEl.closest('.hcard')?.querySelector('.hcard__media')
@@ -181,7 +191,7 @@ document.addEventListener('click', async (e) => {
     const item = await findItem(listEl.dataset.list);
     if (!item) return;
     const added = store.toggleList(item);
-    haptic(added ? [8, 40, 8] : 8);
+    feedback(added ? 'add' : 'remove', listEl, added ? [8, 40, 8] : 8);
     document.querySelectorAll(`[data-list="${CSS.escape(item.key)}"]`).forEach((b) => {
       b.classList.toggle('is-on', added);
       b.setAttribute('aria-pressed', added);
@@ -213,14 +223,14 @@ document.addEventListener('click', async (e) => {
   const a = e.target.closest('a[href]');
   if (a && a.origin === location.origin && !a.target && !a.hasAttribute('download') && !a.getAttribute('href').startsWith('#')) {
     e.preventDefault();
-    if (a.closest('.tabbar')) haptic(6);
+    if (a.closest('.tabbar, .nav')) feedback('tab', a, 6);
     navigate(a.getAttribute('href'), { from: a.closest('.card') });
   }
 });
 
 async function share(item) {
   const url = location.origin + item.href;
-  const data = { title: `${item.title} on Lumen`, text: item.playable ? `Watch ${item.title} free on Lumen` : `Check out ${item.title}`, url };
+  const data = { title: `${item.title} · Arnav Movies`, text: `Watch ${item.title} on Arnav Movies`, url };
   try {
     if (navigator.share) return await navigator.share(data);
     await navigator.clipboard.writeText(url);
@@ -229,7 +239,19 @@ async function share(item) {
 }
 
 /* -------------------------------------------------------------------- boot */
-initSearch(navigate);
+initSearch(navigate, {
+  // "What's said": open the film right where the line is spoken.
+  onQuote: async ({ id, t, q }) => {
+    const item = await findItem('ia:' + id);
+    if (item) play(item, { at: Math.max(0, t - 4), quote: q });
+  },
+});
+initShortcuts();
+// Late-rendered rows (live API slots) get their ‹ › buttons as they arrive.
+new MutationObserver(() => {
+  clearTimeout(window.__hsT);
+  window.__hsT = setTimeout(() => wireScrollers(view), 120);
+}).observe(view, { childList: true, subtree: true });
 initHoverCards((key) => registry.get(key));
 document.addEventListener('player:closed', () => {
   // Refresh progress-dependent UI (Resume buttons, Continue Watching, Because you watched).

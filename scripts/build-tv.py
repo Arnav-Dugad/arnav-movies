@@ -19,8 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, ".cache", "http")
-UA = {"User-Agent": "LumenCatalog/2.0 (https://github.com/Arnav-Dugad/lumen-cinema)"}
-TMDB = "https://lumen-cinema.arnavrival12.workers.dev/api/tmdb/"  # our Worker proxy (key stays server-side)
+UA = {"User-Agent": "ArnavMoviesCatalog/3.0 (https://github.com/Arnav-Dugad/arnav-movies)"}
+TMDB = "https://arnav-movies.arnavrival12.workers.dev/api/tmdb/"  # our Worker proxy (key stays server-side)
 
 # (display name, Archive title query, TMDB search name, first-air year hint)
 SERIES = [

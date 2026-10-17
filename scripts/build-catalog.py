@@ -22,7 +22,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UA = {"User-Agent": "LumenCatalog/2.0 (https://github.com/Arnav-Dugad/lumen-cinema; public-domain film catalog)"}
+UA = {"User-Agent": "ArnavMoviesCatalog/3.0 (https://github.com/Arnav-Dugad/arnav-movies; public-domain film catalog)"}
 RT, METACRITIC = "Q105584", "Q150248"
 FILM_TYPES = "wd:Q11424 wd:Q24862 wd:Q202866 wd:Q506240 wd:Q17517379"  # film, short, animated film, TV film, animated short
 
@@ -230,7 +230,7 @@ def pick_archive(film):
 
 # ------------------------------------------------------------------- 4. tmdb
 # Some ISPs block api.themoviedb.org; the site's own Worker proxies TMDB (key stays server-side).
-TMDB_PROXY = os.environ.get("TMDB_PROXY", "https://lumen-cinema.arnavrival12.workers.dev/api/tmdb/")
+TMDB_PROXY = os.environ.get("TMDB_PROXY", "https://arnav-movies.arnavrival12.workers.dev/api/tmdb/")
 _tmdb_direct = None
 
 

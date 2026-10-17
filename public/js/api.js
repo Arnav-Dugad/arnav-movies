@@ -2,8 +2,7 @@
 //   /data/catalog.json  verified public-domain films (built by scripts/build-catalog.py)
 //   /api/*              our Cloudflare Worker: TMDB proxy, subtitles, geo, stream-health
 //   Internet Archive    streams, the 28,000-film Vault, classic TV and cartoons
-//   TVMaze              TV schedules, cast, episodes
-//   AniList             anime
+//   NASA Image & Video  public-domain NASA films and clips
 //   Wikidata/Wikipedia  people pages and summaries
 // To add a source, write a provider that returns the same item shape (see the `to*` mappers).
 
@@ -140,6 +139,7 @@ export async function catalogDetail(item) {
     wiki: d.wiki,
     qid: d.qid,
     release: d.rel || {},
+    marks: d.mk || null, // where opening titles end / credits begin (captions or frame analysis)
     // Slideshow frames for films without a trailer: TMDB backdrops, else our best-scene stills.
     slides: [item.backdrop, ...(d.backdrops || []).map((p) => tmdbImg(p, 'w1280'))].filter(Boolean).concat((d.stills || []).map((s) => '/data/stills/' + s)),
   });
@@ -476,252 +476,125 @@ export async function person(qid) {
   };
 }
 
-/* -------------------------------------------------------------------- tvmaze */
-const TVM = 'https://api.tvmaze.com';
+/* --------------------------------------------------------------- more sources */
+// Everything here streams free and legally: NASA video is public domain; Universal Newsreels,
+// Prelinger and FedFlix are public-domain collections; the Creative Commons picks are open movies.
+export const SOURCES = {
+  curated: { label: 'Curated', sub: 'Verified public-domain classics' },
+  vault: { label: 'The Vault', sub: '28,000 films on the Internet Archive', collection: 'feature_films' },
+  newsreels: { label: 'Newsreels', sub: 'Universal Newsreels, 1929–1967', collection: 'universal_newsreels' },
+  prelinger: { label: 'Prelinger Archives', sub: 'Ads, educational and industrial films', collection: 'prelinger' },
+  government: { label: 'Government Films', sub: 'FedFlix: films made by the U.S. government', collection: 'FedFlix' },
+  nasa: { label: 'NASA', sub: 'Missions, launches and science from NASA', nasa: true },
+  cc: { label: 'Creative Commons', sub: 'Open movies you’re free to watch and share', collection: 'open-film-trust' },
+};
 
-export function toShow(s) {
-  if (!s) return null;
+const NASA = 'https://images-api.nasa.gov';
+const https = (u) => (u ? u.replace(/^http:\/\//, 'https://') : u);
+
+function toNasa(it) {
+  const d = it?.data?.[0];
+  if (!d) return null;
+  const links = it.links || [];
+  const img = https((links.find((l) => /~(large|medium)\.jpg$/i.test(l.href)) || links[0])?.href);
   return {
-    key: 'tv:' + s.id,
-    kind: 'show',
-    source: 'tvmaze',
-    id: s.id,
-    title: s.name,
-    year: s.premiered ? +s.premiered.slice(0, 4) : null,
-    ended: s.ended,
-    status: s.status,
-    poster: s.image?.medium?.replace('http://', 'https://') || null,
-    posterHd: s.image?.original?.replace('http://', 'https://') || null,
-    overview: stripHtml(s.summary || ''),
-    genres: s.genres || [],
-    rating: s.rating?.average ? { tvmaze: s.rating.average } : {},
-    score: s.rating?.average || 0,
-    weight: s.weight || 0,
-    runtime: s.averageRuntime || s.runtime || null,
-    network: s.network?.name || s.webChannel?.name || null,
-    networkKind: s.network ? 'TV network' : s.webChannel ? 'Streaming' : null,
-    country: s.network?.country?.name || s.webChannel?.country?.name || null,
-    officialSite: s.officialSite,
-    imdb: s.externals?.imdb || null,
-    language: s.language,
-    schedule: s.schedule,
-    playable: false,
-    href: '/show/' + s.id,
+    key: 'nasa:' + d.nasa_id,
+    kind: 'clip',
+    source: 'nasa',
+    id: d.nasa_id,
+    title: d.title,
+    year: +String(d.date_created || '').slice(0, 4) || null,
+    poster: img,
+    posterHd: img,
+    backdrop: img,
+    backdropSm: img,
+    overview: stripHtml(d.description || '').slice(0, 700),
+    genres: ['Space'],
+    tags: ['nasa'],
+    credit: [d.center, 'NASA'].filter(Boolean).join(' · '),
+    manifest: https(it.href),
+    rating: {},
+    playable: true,
+    href: '/watch/nasa/' + encodeURIComponent(d.nasa_id),
   };
 }
 
-export async function popularShows() {
-  const pages = await Promise.all([0, 1, 2].map((p) => getJSON(`${TVM}/shows?page=${p}`, { ttl: 24 * 3600e3, persist: false })));
-  return pages.flat().filter((s) => s.image && s.rating?.average).map(toShow);
+export async function nasaSearch(q = 'apollo', { page = 1, rows = 24 } = {}) {
+  const d = await getJSON(`${NASA}/search?media_type=video&q=${encodeURIComponent(q)}&page=${page}&page_size=${rows}`, { ttl: 24 * 3600e3 });
+  return { total: d.collection?.metadata?.total_hits || 0, items: (d.collection?.items || []).map(toNasa).filter(Boolean) };
 }
 
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
-
-function dedupeShows(episodes) {
-  const seen = new Map();
-  for (const ep of episodes) {
-    const show = ep.show || ep._embedded?.show;
-    if (!show || !show.image || seen.has(show.id)) continue;
-    const item = toShow(show);
-    item.airing = { name: ep.name, season: ep.season, number: ep.number, airtime: ep.airtime, airstamp: ep.airstamp };
-    seen.set(show.id, item);
-  }
-  return [...seen.values()].sort((a, b) => b.weight - a.weight);
+export async function nasaItem(id) {
+  const d = await getJSON(`${NASA}/search?nasa_id=${encodeURIComponent(id)}&media_type=video`, { ttl: 7 * 86400e3 });
+  const item = toNasa(d.collection?.items?.[0]);
+  if (!item) throw new Error('Not found');
+  return item;
 }
 
-export async function airingTonight() {
-  const { country } = await config();
-  let eps = await getJSON(`${TVM}/schedule?country=${country}&date=${today()}`, { ttl: 3600e3, persist: false }).catch(() => []);
-  let used = country;
-  if (eps.length < 8 && country !== 'US') {
-    eps = await getJSON(`${TVM}/schedule?country=US&date=${today()}`, { ttl: 3600e3, persist: false });
-    used = 'US';
-  }
-  const shows = dedupeShows(eps);
-  shows.country = used;
-  return shows;
+/** The best MP4 (and captions, if NASA published them) for a NASA video. */
+export async function nasaStream(item) {
+  const files = (await getJSON(item.manifest, { ttl: 7 * 86400e3 })).map(https);
+  const pick = (re) => files.find((f) => re.test(f));
+  return {
+    src: pick(/~mobile\.mp4$/i) || pick(/~medium\.mp4$/i) || pick(/~small\.mp4$/i) || pick(/~orig\.mp4$/i) || pick(/\.mp4$/i),
+    srt: pick(/\.srt$/i) || pick(/\.vtt$/i) || null,
+  };
 }
 
-export async function streamingToday() {
-  return dedupeShows(await getJSON(`${TVM}/schedule/web?date=${today()}`, { ttl: 3600e3, persist: false }));
+/** Items for one of the extra sources (Archive collections or NASA). */
+export async function sourceItems(key, { page = 1, rows = 36, sort = 'downloads desc', filter = '' } = {}) {
+  const s = SOURCES[key];
+  if (s?.nasa) return nasaSearch(filter || 'apollo', { page, rows });
+  return iaSearch({ collection: s.collection, page, rows, sort, filter });
 }
 
-export async function searchShows(q) {
-  const r = await getJSON(`${TVM}/search/shows?q=${encodeURIComponent(q)}`, { ttl: 3600e3 });
-  return r.map((x) => toShow(x.show));
-}
-
-export async function showDetail(id) {
-  const s = await getJSON(`${TVM}/shows/${id}?embed[]=cast&embed[]=seasons&embed[]=nextepisode&embed[]=previousepisode`, { ttl: 3600e3, persist: false });
-  const show = toShow(s);
-  show.people = (s._embedded?.cast || []).slice(0, 18).map((c) => ({
-    name: c.person.name,
-    role: c.character?.name,
-    photo: (c.character?.image?.medium || c.person.image?.medium || '').replace('http://', 'https://') || null,
-  }));
-  show.seasons = (s._embedded?.seasons || []).filter((x) => x.episodeOrder !== 0);
-  show.next = s._embedded?.nextepisode || null;
-  show.externals = s.externals || {};
-  return show;
-}
-
-export const seasonEpisodes = (seasonId) => getJSON(`${TVM}/seasons/${seasonId}/episodes`, { ttl: 6 * 3600e3, persist: false });
-
-/** Map a TMDB TV id to TVMaze through IMDb / TheTVDB ids. */
-export async function tvmazeFromTmdb(tmdbId) {
-  const ext = await tmdb(`tv/${tmdbId}/external_ids`);
-  for (const [k, v] of [['imdb', ext.imdb_id], ['thetvdb', ext.tvdb_id]]) {
-    if (!v) continue;
-    const s = await getJSON(`${TVM}/lookup/shows?${k}=${v}`, { ttl: 7 * 86400e3 }).catch(() => null);
-    if (s?.id) return s.id;
+/** A newsreel from the film's era, for the "full programme" before a feature. */
+export async function newsreelFor(year) {
+  const y = year || 1940;
+  for (const span of [3, 8, 40]) {
+    const { items } = await iaSearch({
+      collection: 'universal_newsreels OR prelinger',
+      filter: `(collection:universal_newsreels OR title:newsreel) AND year:[${y - span} TO ${y + span}]`,
+      rows: 20,
+    }).catch(() => ({ items: [] }));
+    const fit = items.filter((x) => !x.runtime || x.runtime <= 14);
+    if (fit.length) return fit[Math.floor(Math.random() * Math.min(6, fit.length))];
   }
   return null;
 }
 
-/** TMDB extras for a TVMaze show: backdrop, logo, trailer and where-to-watch in the viewer's country. */
-export async function showExtras(show) {
-  const ids = show.externals || {};
-  let tv = null;
-  if (ids.imdb) tv = (await tmdb(`find/${ids.imdb}`, { external_source: 'imdb_id' }).catch(() => null))?.tv_results?.[0];
-  if (!tv && ids.thetvdb) tv = (await tmdb(`find/${ids.thetvdb}`, { external_source: 'tvdb_id' }).catch(() => null))?.tv_results?.[0];
-  if (!tv) return {};
-  const [images, videos, providers, { country }] = await Promise.all([
-    tmdb(`tv/${tv.id}/images`, { include_image_language: 'en,null' }).catch(() => ({})),
-    tmdb(`tv/${tv.id}/videos`).catch(() => ({})),
-    tmdb(`tv/${tv.id}/watch/providers`).catch(() => ({})),
-    config(),
-  ]);
-  const logo = (images.logos || []).sort((a, b) => (b.iso_639_1 === 'en') - (a.iso_639_1 === 'en') || b.vote_average - a.vote_average)[0];
-  const trailer = (videos.results || []).find((v) => v.site === 'YouTube' && v.type === 'Trailer') || (videos.results || []).find((v) => v.site === 'YouTube');
-  const region = providers.results?.[country] || providers.results?.US || null;
-  return {
-    tmdb: tv.id,
-    backdrop: tmdbImg(tv.backdrop_path, 'w1280'),
-    logo: logo ? tmdbImg(logo.file_path, 'w500') : null,
-    trailer: trailer?.key || null,
-    providers: region,
-    providerCountry: providers.results?.[country] ? country : 'US',
-    vote: tv.vote_average,
-  };
+/* --------------------------------------------------------- search what's said */
+export const quoteSearch = (q) => getJSON(`/api/quote?v=2&q=${encodeURIComponent(q)}`, { ttl: 3600e3 }).catch(() => []);
+
+/* ------------------------------------------------------- crowd skip points */
+export const crowdMarks = (id) => getJSON(`/api/marks?id=${encodeURIComponent(id)}`, { ttl: 600e3, persist: false }).catch(() => ({}));
+export function postMark(id, kind, t) {
+  try {
+    fetch('/api/marks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, kind, t }), keepalive: true }).catch(() => {});
+  } catch {}
 }
 
-export async function similarShows(show, pool) {
-  const g = new Set(show.genres);
-  return pool
-    .filter((s) => s.id !== show.id)
-    .map((s) => ({ s, score: s.genres.filter((x) => g.has(x)).length * 2 + (s.score || 0) / 3 }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 18)
-    .map((x) => x.s);
-}
+/* ------------------------------------------------------------- trivia */
+const INTERESTING = /\b(first|only|originally|never|record|award|oscar|emmy|banned|censor|budget|lost|restored|rediscovered|inspired|based on|filmed|shot|cameo|improvis|remake|sequel|debut|final|famous|nominated|won|premiere|reissued|copyright)\b/i;
 
-/* ------------------------------------------------------------- tmdb tv rows */
-const toTmdbShow = (t) => ({
-  key: 'tmdbtv:' + t.id,
-  kind: 'show',
-  source: 'tmdb',
-  id: t.id,
-  title: t.name,
-  year: t.first_air_date ? +t.first_air_date.slice(0, 4) : null,
-  poster: tmdbImg(t.poster_path, 'w342'),
-  posterHd: tmdbImg(t.poster_path, 'w780'),
-  backdrop: tmdbImg(t.backdrop_path, 'w1280'),
-  overview: t.overview,
-  genres: [],
-  rating: t.vote_average ? { tmdb: Math.round(t.vote_average * 10) / 10 } : {},
-  playable: false,
-  href: '/show/t' + t.id,
-});
-
-export async function trendingTv() {
-  const d = await tmdb('trending/tv/week');
-  return d.results.filter((t) => t.poster_path).map(toTmdbShow);
-}
-
-export async function popularInCountry() {
-  const { country } = await config();
-  const d = await tmdb('discover/tv', { with_origin_country: country, sort_by: 'popularity.desc', 'vote_count.gte': 20 });
-  const shows = d.results.filter((t) => t.poster_path).map(toTmdbShow);
-  shows.country = country;
-  return shows;
-}
-
-/* -------------------------------------------------------------------- anilist */
-const ANILIST = 'https://graphql.anilist.co';
-const anilist = (query, variables = {}) =>
-  getJSON(ANILIST, {
-    ttl: 3 * 3600e3,
-    init: { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ query, variables }) },
-  }).then((d) => d.data);
-
-const MEDIA_CARD = 'id title { english romaji } coverImage { large extraLarge color } bannerImage averageScore genres seasonYear format episodes';
-
-const toAnime = (m) => ({
-  key: 'anime:' + m.id,
-  kind: 'anime',
-  source: 'anilist',
-  id: m.id,
-  title: m.title.english || m.title.romaji,
-  year: m.seasonYear,
-  poster: m.coverImage.large,
-  posterHd: m.coverImage.extraLarge,
-  color: m.coverImage.color,
-  backdrop: m.bannerImage,
-  genres: m.genres || [],
-  rating: m.averageScore ? { anilist: m.averageScore } : {},
-  format: m.format,
-  episodes: m.episodes,
-  playable: false,
-  href: '/anime/' + m.id,
-});
-
-export async function animeRows() {
-  const season = (() => {
-    const m = new Date().getMonth();
-    return ['WINTER', 'WINTER', 'SPRING', 'SPRING', 'SPRING', 'SUMMER', 'SUMMER', 'SUMMER', 'FALL', 'FALL', 'FALL', 'WINTER'][m];
-  })();
-  const year = new Date().getMonth() === 11 ? new Date().getFullYear() + 1 : new Date().getFullYear();
-  const d = await anilist(`query ($season: MediaSeason, $year: Int) {
-    trending: Page(perPage: 24) { media(type: ANIME, sort: TRENDING_DESC, isAdult: false) { ${MEDIA_CARD} } }
-    season: Page(perPage: 24) { media(type: ANIME, season: $season, seasonYear: $year, sort: POPULARITY_DESC, isAdult: false) { ${MEDIA_CARD} } }
-    top: Page(perPage: 10) { media(type: ANIME, sort: SCORE_DESC, isAdult: false) { ${MEDIA_CARD} } }
-  }`, { season, year });
-  return { trending: d.trending.media.map(toAnime), season: d.season.media.map(toAnime), top: d.top.media.map(toAnime), seasonName: `${season[0]}${season.slice(1).toLowerCase()} ${year}` };
-}
-
-export async function animeSearch(q) {
-  const d = await anilist(`query ($q: String) { Page(perPage: 8) { media(type: ANIME, search: $q, isAdult: false) { ${MEDIA_CARD} } } }`, { q });
-  return d.Page.media.map(toAnime);
-}
-
-export async function animeDetail(id) {
-  const d = await anilist(`query ($id: Int) { Media(id: $id, type: ANIME) {
-    ${MEDIA_CARD} description(asHtml: false) duration status season source countryOfOrigin
-    studios(isMain: true) { nodes { name } }
-    trailer { id site }
-    nextAiringEpisode { episode airingAt }
-    externalLinks { site url type color icon language }
-    characters(perPage: 16, sort: [ROLE, RELEVANCE]) { edges { role node { name { full } image { medium } } voiceActors(language: JAPANESE) { name { full } } } }
-    recommendations(perPage: 14, sort: RATING_DESC) { nodes { mediaRecommendation { ${MEDIA_CARD} } } }
-  } }`, { id: +id });
-  const m = d.Media;
-  const a = toAnime(m);
-  return {
-    ...a,
-    overview: stripHtml((m.description || '').replace(/<br\s*\/?>/g, ' ')),
-    runtime: m.duration,
-    status: m.status,
-    season: m.season,
-    source: m.source,
-    studios: m.studios.nodes.map((s) => s.name),
-    trailer: m.trailer?.site === 'youtube' ? m.trailer.id : null,
-    next: m.nextAiringEpisode,
-    streaming: (m.externalLinks || []).filter((l) => l.type === 'STREAMING'),
-    links: (m.externalLinks || []).filter((l) => l.type === 'INFO'),
-    people: m.characters.edges.map((e) => ({ name: e.node.name.full, role: e.voiceActors?.[0]?.name?.full ? `CV: ${e.voiceActors[0].name.full}` : e.role, photo: e.node.image.medium })),
-    recs: m.recommendations.nodes.map((n) => n.mediaRecommendation).filter(Boolean).map(toAnime),
-  };
+/** "Did you know…" facts: interesting sentences from the Wikipedia article. */
+export async function trivia(title, wikiUrl) {
+  let page = wikiUrl ? decodeURIComponent(wikiUrl.split('/wiki/')[1] || '') : '';
+  if (!page) {
+    const s = await getJSON(`https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srlimit=3&srsearch=${encodeURIComponent(title)}`, { ttl: 7 * 86400e3 }).catch(() => null);
+    // Only trust an article that is actually about this title (not a list or a namesake).
+    const norm = (x) => String(x).toLowerCase().replace(/\(.*?\)|[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+    const want = norm(title);
+    page = (s?.query?.search || []).map((r) => r.title).find((t) => !/^List of/i.test(t) && want && (norm(t) === want || norm(t).startsWith(want) || (norm(t).length > 8 && want.startsWith(norm(t))))) || '';
+  }
+  if (!page) return [];
+  const d = await getJSON(`https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&exsectionformat=plain&redirects=1&format=json&origin=*&titles=${encodeURIComponent(page)}`, { ttl: 7 * 86400e3 }).catch(() => null);
+  const text = Object.values(d?.query?.pages || {})[0]?.extract || '';
+  const body = text.split(/\n(?:References|See also|External links|Notes|Further reading)\n/)[0];
+  const sentences = body.replace(/\s+/g, ' ').match(/[^.!?]+[.!?]+(?=\s|$)/g) || [];
+  return sentences
+    .slice(1)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 60 && s.length < 260 && INTERESTING.test(s) && !/[{}=]/.test(s))
+    .slice(0, 8);
 }

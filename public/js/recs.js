@@ -59,8 +59,8 @@ export function becauseYouWatched(films, n = 2) {
     .filter((r) => r.items.length >= 4);
 }
 
-/** Nightly "Lumen Picks": quality titles, nudged by taste, reshuffled each midnight. */
-export function lumenPicks(films, n = 14) {
+/** Nightly "Arnav's Picks": quality titles, nudged by taste, reshuffled each midnight. */
+export function nightlyPicks(films, n = 14) {
   const taste = store.taste();
   const rejected = store.rejected();
   const pool = films.filter((f) => !f.tags.includes('short') && !rejected.has(f.key) && (f.rating?.rt >= 75 || f.rating?.tmdb >= 6.6));

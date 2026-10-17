@@ -4,9 +4,9 @@
 // series queues · cinema mode · picture tuning · de-flicker / steady restoration · sleep timer ·
 // Chromecast · AirPlay · PiP · swipe-down to close · keyboard shortcuts · lock-screen controls ·
 // stream-failure reporting with automatic fallback.
-import { iaItem, iaStream, catalog, nextEpisode, subtitleText, subtitleLangs, report, deadFiles, config } from './api.js';
+import { iaItem, iaStream, catalog, catalogDetail, nextEpisode, subtitleText, subtitleLangs, report, deadFiles, config, nasaStream, crowdMarks, postMark, trivia } from './api.js';
 import { store } from './store.js';
-import { esc, icon, fmtTime, toast, haptic } from './ui.js';
+import { esc, icon, fmtTime, toast, haptic, feedback } from './ui.js';
 import { similar } from './recs.js';
 import { dragDismiss } from './gestures.js';
 import { castAvailable, castMedia, onCastEnd } from './cast.js';
@@ -38,10 +38,21 @@ const ago = (ts) => {
  * Play an item. `from` is the element tapped (the player grows out of it like an app icon);
  * `queue` is an ordered list of episodes so "next" follows the series.
  */
-export async function play(item, { from = null, queue = null } = {}) {
-  haptic();
+export async function play(item, { from = null, queue = null, at = null, quote = null } = {}) {
+  feedback('play', from);
   const rect = from?.getBoundingClientRect?.();
   origin = rect && rect.width > 20 ? { key: item.key, rect } : null;
+  if (item.source === 'nasa') {
+    // NASA videos come straight from NASA's own asset store.
+    try {
+      const { src, srt } = await nasaStream(item);
+      if (!src) throw new Error('no mp4');
+      return open({ ...item, stream: src, srt }, queue, { at, quote });
+    } catch {
+      return toast('This NASA video is unavailable right now', 'info');
+    }
+  }
+  if (item.slug && !item.detailed) await catalogDetail(item).catch(() => {}); // skip points + extra info
   if (!item.file) {
     try {
       const full = await iaItem(item.id);
@@ -58,10 +69,10 @@ export async function play(item, { from = null, queue = null } = {}) {
     const alt = full?.alts?.find((f) => !dead.has(item.id + '|' + f));
     if (alt) item = { ...item, file: alt };
   }
-  open(item, queue);
+  open(item, queue, { at, quote });
 }
 
-function open(item, queue) {
+function open(item, queue, { at = null, quote = null } = {}) {
   close(true, true);
   item = { ...item };
   current = item;
@@ -80,7 +91,9 @@ function open(item, queue) {
       <video playsinline preload="auto" x-webkit-airplay="allow"></video>
       <canvas class="player__canvas" hidden></canvas>
       <div class="player__launch" aria-hidden="true">${item.backdropSm || item.posterHd ? `<img src="${esc(item.backdropSm || item.posterHd)}" alt="">` : ''}</div>
-      <div class="player__cues" aria-live="off"></div>
+      <div class="player__subs"><div class="player__cues" aria-live="off"></div><div class="player__cues player__cues--second" aria-live="off"></div></div>
+      <div class="player__sleep" aria-hidden="true"></div>
+      <div class="player__curtain" aria-hidden="true"><i></i><i></i><span class="player__marquee">${esc(item.programmeLabel || item.title)}</span></div>
       <div class="player__spinner"></div>
       <div class="player__tap player__tap--l">${icon('back10')}</div>
       <div class="player__tap player__tap--r">${icon('fwd10')}</div>
@@ -103,7 +116,8 @@ function open(item, queue) {
         <button class="p-btn" data-act="fwd" aria-label="Forward 10 seconds">${icon('fwd10')}</button>
       </div>
       <div class="player__bottom">
-        <button class="skip-pill glass" data-act="skip" hidden>Skip intro ${icon('right')}</button>
+        <button class="skip-pill glass" data-act="skip" hidden><span data-skip-label>Skip intro</span> ${icon('right')}</button>
+        <span class="smart-chip glass" hidden>${icon('bolt')} <span data-smart>Smart Speed</span></span>
         <div class="player__bar">
           <span data-cur>0:00</span>
           <div class="scrub" role="slider" aria-label="Seek" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -144,14 +158,19 @@ function open(item, queue) {
   const panel = $('.player__panel');
   const canvas = $('.player__canvas');
   const subs = new SubtitleRenderer(v, $('.player__cues'));
-  cleanup.push(() => subs.destroy());
+  const subs2 = new SubtitleRenderer(v, $('.player__cues--second')); // second language, for learners
+  cleanup.push(() => subs.destroy(), () => subs2.destroy());
   let full = null; // full Archive metadata (thumbs, subtitles, alternates), loaded in the background
   let casting = false;
 
-  v.src = iaStream(item.id, item.file);
+  const streamUrl = () => item.stream || iaStream(item.id, item.file);
+  v.src = streamUrl();
   v.volume = store.pref('volume', 1);
   volInput.value = v.volume;
-  v.playbackRate = store.pref('speed', 1);
+  // Speed is remembered per title (falls back to your last speed anywhere).
+  const speedKey = 'speed:' + item.key;
+  let baseRate = store.pref(speedKey, store.pref('speed', 1));
+  v.playbackRate = baseRate;
   $('[data-act="speed"]').textContent = `${v.playbackRate}×`;
   if (store.pref('cinema', false)) root.classList.add('player--cinema');
   applyLook(store.pref('look', null));
@@ -159,22 +178,29 @@ function open(item, queue) {
   /* ------------------------------------------------------------ smart resume */
   const saved = store.progress(item.key);
   const resumeAt = saved && saved.t / saved.d < 0.95 && saved.t > 20 ? saved.t : 0;
-  const startAt = resumeAt ? Math.max(0, resumeAt - 10) : 0; // back up 10 s so you catch the thread
+  const startAt = at != null ? Math.max(0, at) : resumeAt ? Math.max(0, resumeAt - 10) : 0; // back up 10 s so you catch the thread
   v.addEventListener('loadedmetadata', () => {
     if (startAt) v.currentTime = startAt;
   }, { once: true });
-  v.addEventListener('playing', () => root.classList.add('is-started'), { once: true });
+  v.addEventListener('playing', () => {
+    root.classList.add('is-started');
+    // The cinema curtain parts once the picture is actually running.
+    setTimeout(() => root.classList.add('is-curtain-open'), 120);
+  }, { once: true });
+  if (!store.pref('curtain', true) || matchMedia('(prefers-reduced-motion: reduce)').matches) root.classList.add('no-curtain');
   v.play().catch(() => root.classList.add('is-paused'));
-  if (resumeAt > 30) showRecap();
+  if (resumeAt > 30 && at == null) showRecap();
 
-  iaItem(item.id).then((f) => {
+  (item.source === 'nasa' ? Promise.resolve({ subtitles: [], thumbs: [], alts: [] }) : iaItem(item.id)).then((f) => {
     if (el !== root) return;
     full = f;
     item.alts ??= f.alts;
     item.subtitles = f.subtitles;
     setupScenes(f.thumbs);
     restoreSubtitles();
-    if (resumeAt > 30) fillRecap();
+    if (resumeAt > 30 && at == null) fillRecap();
+    detectMarks();
+    if (quote) seekToQuote();
   }).catch(() => {});
 
   // --- UI auto-hide
@@ -252,7 +278,7 @@ function open(item, queue) {
     }
     setTimeout(() => {
       if (el !== root) return;
-      v.src = iaStream(item.id, item.file) + (attempts ? `?retry=${attempts}` : '');
+      v.src = streamUrl() + (attempts ? `?retry=${attempts}` : '');
       v.addEventListener('loadedmetadata', () => (v.currentTime = t), { once: true });
       v.play().catch(() => {});
     }, 600 * Math.max(1, attempts));
@@ -260,6 +286,7 @@ function open(item, queue) {
 
   /* ----------------------------------------------------------- scenes & thumbs */
   let thumbs = [];
+  let sceneTimes = [];
   function setupScenes(list) {
     thumbs = list || [];
     if (thumbs.length < 4) return;
@@ -269,6 +296,7 @@ function open(item, queue) {
     const want = Math.min(14, pool.length);
     const step = (pool.length - 1) / (want - 1);
     const scenes = Array.from({ length: want }, (_, i) => pool[Math.round(i * step)]);
+    sceneTimes = scenes.map((x) => x.t);
     $('.scenes__strip').innerHTML = scenes
       .map((s, i) => `<button class="scene" data-seek="${s.t}"><img src="${esc(s.url)}" alt="" loading="lazy"><span>${i + 1} · ${fmtTime(s.t)}</span></button>`)
       .join('');
@@ -316,21 +344,83 @@ function open(item, queue) {
     } catch {}
   }
 
-  /* --------------------------------------------------------------- skip intro */
+  /* ------------------------------------------------- skip intro / skip credits */
+  // Best signal wins: viewers' agreed skips (crowd) > captions (first/last dialogue, exact) >
+  // frame analysis of the opening titles and end credits (to about a minute) > your own past skips.
   const sKey = 'intro:' + seriesKey(item);
-  const introEnd = () => store.pref(sKey, 75);
-  const skipBtn = $('.skip-pill');
-  function intro() {
-    if (!isEp) return;
-    const t = v.currentTime;
-    skipBtn.hidden = !(t > 3 && t < introEnd() - 3);
+  const marks = { ti: item.marks?.ti ?? null, tc: item.marks?.tc ?? null, src: item.marks?.src || null };
+  if (marks.ti == null && isEp && store.pref(sKey, null)) Object.assign(marks, { ti: store.pref(sKey), src: 'you' });
+  crowdMarks(item.id).then((c) => {
+    if (c.intro) Object.assign(marks, { ti: c.intro.t, src: 'crowd' });
+    if (c.credits) marks.tc = c.credits.t;
+  });
+  async function detectMarks() {
+    // Exact points from the English captions when the title has them.
+    if (marks.src === 'captions' || marks.src === 'crowd') return;
+    const src = full?.subtitles?.[0];
+    if (!src) return;
+    try {
+      const cues = parseVTT(await subtitleText(item, { source: 'ia', ...src })).filter((c) => !/^[\[(♪]/.test(c.text));
+      if (cues.length < 20 || el !== root) return;
+      const first = cues.find((c, i) => cues[i + 2] && cues[i + 2].start - c.start < 90)?.start;
+      const lastI = [...cues.keys()].reverse().find((i) => i >= 2 && cues[i].start - cues[i - 2].start < 90);
+      if (first > 20) marks.ti = Math.max(0, first - 1.5);
+      if (lastI != null && v.duration && v.duration - cues[lastI].end > 25) marks.tc = cues[lastI].end + 2;
+      marks.src = 'captions';
+      captionCues = cues;
+    } catch {}
   }
-  // Learn each series' intro length from manual skips in the first few minutes.
+  const skipBtn = $('.skip-pill');
+  const skipLabel = $('[data-skip-label]');
+  let skipKind = null;
+  function intro() {
+    const t = v.currentTime, d = v.duration || 0;
+    let kind = null;
+    if (marks.ti && t > 2 && t < marks.ti - 2) kind = 'intro';
+    else if (marks.tc && d && t >= marks.tc && d - t > 8) kind = 'credits';
+    if (kind !== skipKind) {
+      skipKind = kind;
+      skipBtn.hidden = !kind;
+      if (kind) skipLabel.textContent = kind === 'intro' ? (isEp ? 'Skip intro' : 'Skip titles') : 'Skip credits';
+    }
+  }
+  // Learn from manual skips: a jump forward early on marks where the opening ends.
   let lastT = 0;
   v.addEventListener('seeking', () => {
-    if (isEp && lastT < 25 && v.currentTime > 30 && v.currentTime < 240) store.setPref(sKey, Math.round(v.currentTime));
+    const nt = v.currentTime;
+    if (lastT < 30 && nt > 20 && nt < 600 && nt - lastT > 15 && skipKind !== 'intro') {
+      if (isEp) store.setPref(sKey, Math.round(nt));
+      postMark(item.id, 'intro', nt);
+    }
   });
   v.addEventListener('timeupdate', () => (lastT = v.currentTime));
+  const noteCredits = () => {
+    const t = v.currentTime, d = v.duration || 0;
+    if (d && t > d * 0.85 && d - t > 15 && skipKind !== 'credits') postMark(item.id, 'credits', t);
+  };
+
+  /* -------------------------------------------------------- jump to a quote */
+  let captionCues = null;
+  async function seekToQuote() {
+    // The search index is cut into ~3-minute windows; find the exact line inside it.
+    const src = full?.subtitles?.[0];
+    if (!src) return;
+    try {
+      const cues = captionCues || parseVTT(await subtitleText(item, { source: 'ia', ...src }));
+      const words = quote.q.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' ').split(/\s+/).filter((w) => w.length > 1);
+      const near = cues.filter((c) => c.start >= quote.t - 30 && c.start <= quote.t + 240);
+      let best = null, bestScore = 0;
+      for (let i = 0; i < near.length; i++) {
+        const text = (near[i].text + ' ' + (near[i + 1]?.text || '')).toLowerCase();
+        const sc = words.filter((w) => text.includes(w)).length;
+        if (sc > bestScore) { best = near[i]; bestScore = sc; }
+      }
+      if (best && el === root) {
+        v.currentTime = Math.max(0, best.start - 2);
+        flash(`“${best.text.slice(0, 60)}${best.text.length > 60 ? '…' : ''}”`);
+      }
+    } catch {}
+  }
 
   /* ------------------------------------------------------------------ up next */
   let nextItem, nextLoading = false, upShown = false, countdown = 0;
@@ -356,23 +446,31 @@ function open(item, queue) {
   }
   function upNextTick() {
     const d = v.duration;
-    if (!d || d < 120) return;
+    if (!d || (d < 120 && !item.programme)) return;
     if (d - v.currentTime < 150) loadNext();
-    if (isEp && !upShown && d - v.currentTime < 25) showUpNext(false);
+    if ((isEp || item.programme) && !upShown && d - v.currentTime < 25) showUpNext(false);
   }
   async function showUpNext(ended) {
     const n = await loadNext();
     if (!n || el !== root || (upShown && !ended)) return;
     upShown = true;
-    const auto = isEp && store.pref('autoplay', true) && sleepMode !== -1;
-    const label = n.kind === 'episode' && n.s && n.e ? `S${n.s} · E${n.e}` : isEp ? 'Next episode' : 'Up next';
+    const auto = (isEp || item.programme) && store.pref('autoplay', true) && sleepMode !== -1;
+    const label = n.programmeLabel ? n.programmeLabel : n.kind === 'episode' && n.s && n.e ? `S${n.s} · E${n.e}` : isEp ? 'Next episode' : 'Up next';
     upBox.hidden = false;
     upBox.innerHTML = `<div class="upnext__img">${n.still || n.backdropSm || n.poster ? `<img src="${esc(n.still || n.backdropSm || n.poster)}" alt="">` : ''}</div>
       <div class="upnext__body"><small>${esc(label)}</small><strong>${esc(n.title)}</strong>
       <div class="upnext__actions"><button class="btn btn--primary btn--sm" data-act="next">${icon('play')} Play${auto ? ' <span data-count></span>' : ''}</button>
-      <button class="btn btn--glass btn--sm" data-act="dismiss-next">Not now</button></div></div>`;
+      <button class="btn btn--glass btn--sm" data-act="dismiss-next">Not now</button></div></div>
+      <div class="upnext__trivia" hidden></div>`;
+    // "Did you know…" between episodes and reels, from Wikipedia.
+    trivia(isEp ? item.seriesTitle : (n.programme ? n.title : item.title), isEp ? null : item.wiki).then((facts) => {
+      const box = upBox.querySelector('.upnext__trivia');
+      if (!facts.length || !box || el !== root) return;
+      box.hidden = false;
+      box.innerHTML = `<small>${icon('sparkles')} Did you know…</small><p>${esc(facts[Math.floor(Math.random() * facts.length)])}</p>`;
+    });
     if (auto && ended) {
-      countdown = 8;
+      countdown = item.programme ? 6 : 8;
       const tick = () => {
         if (el !== root || upBox.hidden) return;
         const c = upBox.querySelector('[data-count]');
@@ -394,17 +492,65 @@ function open(item, queue) {
   function sleepTick() {
     if (!sleepAt) return;
     const left = sleepAt - Date.now();
-    if (left < 10000 && left > 0) {
+    const veil = $('.player__sleep');
+    if (left < 30000 && left > 0) {
+      // Picture and sound fade out together over the last 30 seconds.
       baseVolume = baseVolume || v.volume;
-      v.volume = Math.max(0, baseVolume * (left / 10000));
+      v.volume = Math.max(0, baseVolume * (left / 30000));
+      veil.style.opacity = String(1 - left / 30000);
     } else if (left <= 0) {
       sleepAt = 0;
       sleepMode = 0;
       v.pause();
       v.volume = baseVolume || 1;
-      toast('Sleep timer: paused playback', 'moon');
+      veil.style.opacity = '1';
+      toast('Sleep timer: paused playback. Tap to wake.', 'moon');
+      root.addEventListener('pointerdown', () => (veil.style.opacity = '0'), { once: true });
     }
   }
+
+  /* -------------------------------------------------------------- smart speed */
+  // Speeds through long pauses between lines of dialogue (using the captions), then drops back.
+  let smart = store.pref('smartSpeed', false), timeSaved = 0, lastTick = 0, inGap = false;
+  const smartChip = $('.smart-chip');
+  const smartCues = () => (subs.cues.length > 20 ? subs.cues : captionCues || english?.cues || []);
+  function smartTick() {
+    const cues = smartCues();
+    const now = performance.now();
+    const dt = lastTick ? (now - lastTick) / 1000 : 0;
+    lastTick = now;
+    if (!smart || v.paused || cues.length < 20) {
+      if (inGap) { inGap = false; v.playbackRate = baseRate; }
+      return;
+    }
+    const t = v.currentTime;
+    let lo = 0, hi = cues.length - 1, i = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (cues[m].start <= t) { i = m; lo = m + 1; } else hi = m - 1; }
+    const speaking = i >= 0 && cues[i].end > t;
+    const nextStart = cues[i + 1]?.start ?? Infinity;
+    const gap = !speaking && nextStart - t > 2.5 && (i < 0 || t - cues[i].end > 0.8) && (!marks.tc || t < marks.tc);
+    if (gap !== inGap) {
+      inGap = gap;
+      v.playbackRate = gap ? baseRate * 1.75 : baseRate;
+    }
+    if (gap) timeSaved += dt * (1 - 1 / 1.75);
+    smartChip.hidden = !smart;
+    smartChip.classList.toggle('is-active', gap);
+    $('[data-smart]').textContent = timeSaved > 5 ? `Smart Speed · saved ${fmtTime(timeSaved)}` : 'Smart Speed';
+  }
+  const smartTimer = setInterval(smartTick, 250);
+  cleanup.push(() => clearInterval(smartTimer));
+  function setSmart(on) {
+    smart = on;
+    store.setPref('smartSpeed', on);
+    smartChip.hidden = !on;
+    if (!on) v.playbackRate = baseRate;
+    else if (smartCues().length < 20) {
+      loadEnglish().then((en) => !en && el === root && toast('Smart Speed needs captions — none for this title', 'info'));
+    }
+    flash(on ? 'Smart Speed on' : 'Smart Speed off');
+  }
+  if (smart) loadEnglish().catch(() => {});
 
   /* ------------------------------------------------------------------ picture */
   function lookFilter(look) {
@@ -480,6 +626,29 @@ function open(item, queue) {
     return null;
   }
 
+  let secondSub = null;
+  async function chooseSecond(choice) {
+    subs2.translator?.stop();
+    subs2.translator = null;
+    secondSub = choice;
+    store.setPref('subLang2', choice ? choice.pref : null);
+    if (!choice) return subs2.set([]);
+    try {
+      if (choice.kind === 'tr') {
+        const en = await loadEnglish();
+        if (!en) throw new Error('no source');
+        new Translator(subs2, en.cues, { lang: choice.lang, src: en.src });
+      } else {
+        subs2.set(parseVTT(await subtitleText(item, choice.kind === 'os' ? { source: 'os', lang: choice.lang } : { source: 'ia', ...choice.file })));
+      }
+      flash(`Second line: ${choice.label.replace(' (translated)', '')}`);
+    } catch {
+      secondSub = null;
+      subs2.set([]);
+      toast('That language isn’t available for this title', 'info');
+    }
+  }
+
   async function chooseSubs(choice, announce = true) {
     subs.translator?.stop();
     subs.translator = null;
@@ -501,7 +670,8 @@ function open(item, queue) {
           onStatus: (s) => subStatus(s === 'working' ? 'Translating…' : s === 'budget' ? 'Translation paused for today' : ''),
         });
       } else {
-        const cues = parseVTT(await subtitleText(item, choice.kind === 'os' ? { source: 'os', lang: choice.lang } : { source: 'ia', ...choice.file }));
+        const text = choice.kind === 'url' ? await fetch(choice.url).then((r) => r.text()) : await subtitleText(item, choice.kind === 'os' ? { source: 'os', lang: choice.lang } : { source: 'ia', ...choice.file });
+        const cues = parseVTT(text);
         if (!cues.length) throw new Error('empty');
         if (el !== root) return;
         subs.set(cues);
@@ -518,6 +688,7 @@ function open(item, queue) {
   async function subtitleOptions() {
     const { opensubtitles } = await config();
     const archive = (full?.subtitles || item.subtitles || []).map((s) => ({ kind: 'ia', label: `${s.label}`, file: s, pref: 'ia' }));
+    if (item.srt) archive.push({ kind: 'url', label: 'English (NASA)', url: item.srt, pref: 'ia' });
     const osLangs = opensubtitles && item.imdb ? await subtitleLangs(item.imdb) : [];
     const os = osLangs.slice(0, 14).map((l) => ({ kind: 'os', lang: l, label: langName(l), pref: 'os:' + l }));
     const canTranslate = archive.length || osLangs.includes('en');
@@ -532,7 +703,10 @@ function open(item, queue) {
     const { archive, os, tr } = await subtitleOptions();
     // Same language as last time; English captions stand in for each other, other languages don't.
     const pick = [...os, ...archive, ...tr].find((o) => o.pref === want) || (want === 'ia' || want === 'os:en' ? archive[0] || os.find((o) => o.lang === 'en') : null);
-    if (pick && el === root) chooseSubs(pick, false);
+    if (pick && el === root) await chooseSubs(pick, false);
+    const want2 = store.pref('subLang2', null);
+    const pick2 = want2 && [...os, ...archive, ...tr].find((o) => o.pref === want2);
+    if (pick2 && el === root) chooseSecond(pick2);
   }
 
   async function renderPanel(kind) {
@@ -552,6 +726,10 @@ function open(item, queue) {
           <label class="panel__select"><select data-tr aria-label="Translate captions into">
             <option value="">Choose a language…</option>${tr.map((o, i) => `<option value="${i}" ${isOn(o) ? 'selected' : ''}>${esc(o.label.replace(' (translated)', ''))}</option>`).join('')}
           </select></label><p class="panel__note">Translated live from the English captions with Workers AI, starting where you are.</p>` : ''}
+        ${all.length > 1 || tr.length ? `<div class="panel__title">Second language <small>for learners</small></div>
+          <label class="panel__select"><select data-second aria-label="Show a second subtitle language">
+            <option value="">Off</option>${[...os, ...archive, ...tr].map((o, i) => `<option value="${i}" ${(secondSub?.pref || null) === o.pref ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+          </select></label><p class="panel__note">Shows a second line underneath, so you can follow along in two languages.</p>` : ''}
         <div class="panel__title">Style</div>
         <div class="panel__row"><span>Size</span><div class="panel__chips">${Object.keys(SUB_SIZES).map((k) => `<button class="pill ${st.size === k ? 'is-active' : ''}" data-st="size" data-v="${k}">${k.toUpperCase()}</button>`).join('')}</div></div>
         <div class="panel__row"><span>Font</span><div class="panel__chips">${Object.entries(SUB_FONTS).map(([k, f]) => `<button class="pill ${st.font === k ? 'is-active' : ''}" data-st="font" data-v="${k}">${esc(f.label)}</button>`).join('')}</div></div>
@@ -572,14 +750,17 @@ function open(item, queue) {
           const next = { ...subStyle(), [s.dataset.st]: s.dataset.v };
           store.setPref('subStyle', next);
           applySubStyle($('.player__cues'), next);
+          applySubStyle($('.player__cues--second'), next);
           renderPanel('cc');
         }
       };
+      const both = [...os, ...archive, ...tr];
       panel.onchange = (e) => {
         if (e.target.matches('[data-tr]') && e.target.value !== '') {
           chooseSubs(tr[+e.target.value]);
           hidePanel();
         }
+        if (e.target.matches('[data-second]')) chooseSecond(e.target.value === '' ? null : both[+e.target.value]);
       };
       panel.oninput = null;
     } else {
@@ -594,7 +775,10 @@ function open(item, queue) {
         <div class="panel__title">Old-print restoration</div>
         <div class="panel__chips">${Object.entries(RESTORE).map(([k, x]) => `<button class="pill ${restoreMode === k ? 'is-active' : ''}" data-restore="${k}">${x}</button>`).join('')}</div>
         <p class="panel__note">Blends frames to calm flicker and grain; Steady also trims the wobbling frame edges.</p>
-        <div class="panel__title">Sleep timer</div>
+        <div class="panel__title">Playback</div>
+        <label class="panel__toggle"><span>Smart Speed <small>skims long silences using the captions</small></span><input type="checkbox" ${smart ? 'checked' : ''} data-smart-toggle switch></label>
+        <label class="panel__toggle"><span>Cinema curtain</span><input type="checkbox" ${store.pref('curtain', true) ? 'checked' : ''} data-curtain-toggle switch></label>
+        <div class="panel__title">Sleep timer <small>fades picture and sound</small></div>
         <div class="panel__chips">${SLEEP.map((m) => `<button class="pill ${sleepMode === m ? 'is-active' : ''}" data-sleep="${m}">${m === 0 ? 'Off' : m === -1 ? 'End of title' : m + ' min'}</button>`).join('')}</div>
         ${isEp ? `<label class="panel__toggle"><span>Autoplay next episode</span><input type="checkbox" ${store.pref('autoplay', true) ? 'checked' : ''} data-autoplay switch></label>` : ''}`;
       panel.onclick = (e) => {
@@ -625,7 +809,11 @@ function open(item, queue) {
         store.setPref('look', cur);
         applyLook(cur);
       };
-      panel.onchange = (e) => e.target.matches('[data-autoplay]') && store.setPref('autoplay', e.target.checked);
+      panel.onchange = (e) => {
+        if (e.target.matches('[data-autoplay]')) store.setPref('autoplay', e.target.checked);
+        if (e.target.matches('[data-smart-toggle]')) setSmart(e.target.checked);
+        if (e.target.matches('[data-curtain-toggle]')) store.setPref('curtain', e.target.checked);
+      };
     }
   }
   const hidePanel = () => {
@@ -639,7 +827,7 @@ function open(item, queue) {
     poke();
   };
   const actions = {
-    close: () => close(),
+    close: () => { noteCredits(); feedback('close', $('[data-act="close"]')); close(); },
     toggle: () => {
       haptic(6);
       if (casting) return remoteToggle();
@@ -648,14 +836,25 @@ function open(item, queue) {
     back: () => seek(-10),
     fwd: () => seek(10),
     mute: () => (v.muted = !v.muted),
-    skip: () => { v.currentTime = introEnd(); skipBtn.hidden = true; haptic(); },
+    skip: () => {
+      feedback('tap', skipBtn);
+      if (skipKind === 'intro') v.currentTime = marks.ti;
+      else if (skipKind === 'credits') {
+        loadNext().then((n) => (n ? actions.next() : (v.currentTime = Math.max(0, (v.duration || 0) - 0.5))));
+      }
+      skipBtn.hidden = true;
+      skipKind = null;
+    },
     restart: () => { v.currentTime = 0; $('.recap').hidden = true; v.play().catch(() => {}); },
     'recap-close': () => { $('.recap').hidden = true; v.play().catch(() => {}); },
-    retry: () => { root.classList.remove('is-error'); attempts = 0; const t = v.currentTime || startAt; v.src = iaStream(item.id, item.file) + '?retry=' + Date.now(); v.addEventListener('loadedmetadata', () => (v.currentTime = t), { once: true }); v.play().catch(() => {}); },
-    speed: (btn) => {
-      const next = SPEEDS[(SPEEDS.indexOf(v.playbackRate) + 1) % SPEEDS.length] || 1;
+    retry: () => { root.classList.remove('is-error'); attempts = 0; const t = v.currentTime || startAt; v.src = streamUrl() + '?retry=' + Date.now(); v.addEventListener('loadedmetadata', () => (v.currentTime = t), { once: true }); v.play().catch(() => {}); },
+    speed: (btn, dir = 1) => {
+      const i = SPEEDS.indexOf(baseRate);
+      const next = SPEEDS[(i + dir + SPEEDS.length) % SPEEDS.length] || 1;
+      baseRate = next;
       v.playbackRate = next;
-      btn.textContent = `${next}×`;
+      $('[data-act="speed"]').textContent = `${next}×`;
+      store.setPref(speedKey, next);
       store.setPref('speed', next);
       flash(`${next}× speed`);
     },
@@ -674,6 +873,7 @@ function open(item, queue) {
     next: () => {
       const n = nextItem;
       if (!n) return;
+      noteCredits();
       close(true, true);
       history.replaceState({ scroll: 0 }, '', location.href); // the player's entry becomes a normal one
       play(n, { queue });
@@ -766,9 +966,15 @@ function open(item, queue) {
   scrub.addEventListener('pointerdown', (e) => {
     scrub.setPointerCapture(e.pointerId);
     scrub.classList.add('is-drag');
+    let lastScene = -1;
     const move = (ev) => {
       const p = pctFrom(ev);
-      v.currentTime = p * (v.duration || 0);
+      const t = p * (v.duration || 0);
+      // A tick you can feel (and hear) each time the scrubber crosses a scene marker.
+      const scene = sceneTimes.findIndex((x, k) => t >= x && (sceneTimes[k + 1] ?? Infinity) > t);
+      if (scene !== lastScene && lastScene !== -1) feedback('tick', ev.clientX, 6);
+      lastScene = scene;
+      v.currentTime = t;
       showTip(p);
       sync();
     };
@@ -792,6 +998,12 @@ function open(item, queue) {
       ' ': actions.toggle, k: actions.toggle, arrowleft: () => seek(-5), arrowright: () => seek(5), j: () => seek(-10), l: () => seek(10),
       f: actions.fs, m: actions.mute, p: actions.pip, t: actions.cinema, s: actions.scenes,
       c: () => (activeSub ? chooseSubs(null) : renderPanel('cc')),
+      n: () => skipKind && actions.skip(),
+      g: () => setSmart(!smart),
+      '<': () => actions.speed(null, -1),
+      '>': () => actions.speed(null, 1),
+      ',': () => actions.speed(null, -1),
+      '.': () => actions.speed(null, 1),
       escape: () => (!panel.hidden ? hidePanel() : !$('.scenes').hidden ? ($('.scenes').hidden = true) : !document.fullscreenElement && close()),
       arrowup: () => { v.volume = Math.min(1, v.volume + 0.1); flash(`Volume ${Math.round(v.volume * 100)}%`); },
       arrowdown: () => { v.volume = Math.max(0, v.volume - 0.1); flash(`Volume ${Math.round(v.volume * 100)}%`); },
@@ -813,8 +1025,8 @@ function open(item, queue) {
     const artwork = item.posterHd || item.poster;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: item.title,
-      artist: isEp ? item.seriesTitle || 'Lumen' : (item.director || []).join(', ') || 'Lumen',
-      album: item.year ? String(item.year) : 'Lumen',
+      artist: isEp ? item.seriesTitle || 'Arnav Movies' : (item.director || []).join(', ') || 'Arnav Movies',
+      album: item.year ? String(item.year) : 'Arnav Movies',
       artwork: artwork ? [{ src: artwork, sizes: '512x768', type: 'image/jpeg' }] : [],
     });
     const ms = navigator.mediaSession;

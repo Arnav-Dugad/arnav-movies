@@ -23,7 +23,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, ".cache", "http")
 THUMBS = os.path.join(ROOT, ".cache", "thumbs")
 OUT = os.path.join(ROOT, "public", "data", "stills")
-UA = {"User-Agent": "LumenCatalog/2.0 (https://github.com/Arnav-Dugad/lumen-cinema)"}
+UA = {"User-Agent": "ArnavMoviesCatalog/3.0 (https://github.com/Arnav-Dugad/arnav-movies)"}
 CANDIDATES = 9
 KEEP_KB = 4
 

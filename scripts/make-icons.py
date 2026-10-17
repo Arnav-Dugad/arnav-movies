@@ -58,8 +58,8 @@ def og():
         mid = ImageFont.truetype(fonts + "segoeui.ttf", 40)
     except OSError:
         big = mid = ImageFont.load_default()
-    d.text((88, 300), "Lumen", font=big, fill=(245, 245, 247))
-    d.text((92, 450), "Free classic cinema & TV, streamed beautifully.", font=mid, fill=(200, 200, 210))
+    d.text((88, 300), "Arnav Movies", font=big, fill=(245, 245, 247))
+    d.text((92, 450), "Classic cinema & TV, streamed beautifully.", font=mid, fill=(200, 200, 210))
     img.save(os.path.join(PUB, "og.png"), optimize=True)
 
 
