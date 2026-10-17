@@ -1,6 +1,10 @@
 // Page colours that follow the film: sample the poster, derive a readable accent and re-tint the UI
 // (buttons, focus rings, progress, glow). Returns a function that restores the house colours.
 import { sampleColors } from './ui.js';
+import { store } from './store.js';
+
+/** House accents for Settings → Appearance (hue; null = the original amber). */
+export const ACCENTS = { amber: null, red: 2, pink: 330, purple: 268, blue: 212, teal: 178, green: 140 };
 
 const root = document.documentElement.style;
 const VARS = ['--accent', '--accent-2', '--accent-grad', '--focus', '--tint', '--tint-rgb'];
@@ -32,7 +36,7 @@ const READABLE = /^(\/|https:\/\/(image\.tmdb\.org|archive\.org|[\w-]+\.archive\
 
 export function applyTheme(src) {
   const my = ++token;
-  if (!src || !READABLE.test(src)) {
+  if (!src || !READABLE.test(src) || !store.pref('posterColors', true)) {
     reset();
     return reset;
   }
@@ -42,13 +46,7 @@ export function applyTheme(src) {
     const [a, b] = c.map(toHsl);
     const [h, s] = a[1] >= b[1] ? a : b;
     if (s < 0.18) return reset();
-    const sat = Math.max(0.6, Math.min(0.9, s + 0.2));
-    root.setProperty('--accent', hsl(h, sat, 0.68));
-    root.setProperty('--accent-2', hsl(h + 28, sat, 0.6));
-    root.setProperty('--accent-grad', `linear-gradient(135deg, ${hsl(h - 12, sat, 0.76)} 0%, ${hsl(h, sat, 0.66)} 45%, ${hsl(h + 28, sat, 0.58)} 100%)`);
-    root.setProperty('--focus', hsl(h, sat, 0.72));
-    root.setProperty('--tint', hsl(h, sat, 0.62));
-    root.setProperty('--tint-rgb', hslToRgb(h, sat, 0.62).join(', '));
+    setVars(h, Math.max(0.6, Math.min(0.9, s + 0.2)));
     document.documentElement.dataset.tinted = '1';
   });
   return () => {
@@ -56,8 +54,20 @@ export function applyTheme(src) {
   };
 }
 
+function setVars(h, sat) {
+  root.setProperty('--accent', hsl(h, sat, 0.68));
+  root.setProperty('--accent-2', hsl(h + 28, sat, 0.6));
+  root.setProperty('--accent-grad', `linear-gradient(135deg, ${hsl(h - 12, sat, 0.76)} 0%, ${hsl(h, sat, 0.66)} 45%, ${hsl(h + 28, sat, 0.58)} 100%)`);
+  root.setProperty('--focus', hsl(h, sat, 0.72));
+  root.setProperty('--tint', hsl(h, sat, 0.62));
+  root.setProperty('--tint-rgb', hslToRgb(h, sat, 0.62).join(', '));
+}
+
+/** Back to the house colours: amber, or the accent picked in Settings. */
 export function reset() {
   token++;
   VARS.forEach((v) => root.removeProperty(v));
   delete document.documentElement.dataset.tinted;
+  const hue = ACCENTS[store.pref('accent', 'amber')];
+  if (hue != null) setVars(hue, 0.78);
 }

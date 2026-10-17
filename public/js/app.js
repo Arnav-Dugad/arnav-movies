@@ -13,6 +13,10 @@ import { initSearch, openSearch } from './search.js';
 import { icon, toast, haptic, feedback, wireScrollers } from './ui.js';
 import { reset as resetTheme } from './theme.js';
 import { initShortcuts } from './shortcuts.js';
+import { space } from './space.js';
+import { timeline } from './timeline.js';
+import { settingsView } from './settings.js';
+import { applyAppearance, reducedMotion } from './prefs.js';
 import { dragDismiss } from './gestures.js';
 
 const view = document.getElementById('view');
@@ -26,6 +30,9 @@ const routes = [
   [/^\/title\/(.+?)\/?$/, views.title, 'movies', true],
   [/^\/(show|anime)\/.+$/, (ctx) => navigate('/tv', { replace: true }), 'tv'],
   [/^\/watch\/nasa\/(.+?)\/?$/, views.nasaView, 'movies', true],
+  [/^\/space\/?$/, space, 'movies'],
+  [/^\/newsreels\/?$/, timeline, 'tv'],
+  [/^\/settings\/?$/, settingsView, 'list'],
   [/^\/series\/([\w-]+)\/?$/, seriesView, 'tv', true],
   [/^\/shorts\/?$/, shorts, 'shorts'],
   [/^\/person\/(Q\d+)\/?$/, personView, ''],
@@ -93,7 +100,7 @@ export function navigate(href, { replace = false, from = null } = {}) {
 }
 
 function transition(fn, morphEl) {
-  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) return fn();
+  if (!document.startViewTransition || reducedMotion()) return fn();
   document.querySelectorAll('[style*="poster-morph"]').forEach((e) => e.style.removeProperty('view-transition-name'));
   if (morphEl) morphEl.style.setProperty('view-transition-name', 'poster-morph');
   const vt = document.startViewTransition(fn);
@@ -102,7 +109,7 @@ function transition(fn, morphEl) {
 
 window.addEventListener('popstate', (e) => {
   if (e.state?.player) return;
-  if (document.querySelector('.player')) return; // the player handles its own history entry
+  if (document.querySelector('.player:not(.player--mini)')) return; // the full-screen player handles its own history entry
   navIdx = e.state?.idx || 0;
   transition(() => render({ restoreScroll: e.state?.scroll || 0 }));
 });
@@ -245,7 +252,15 @@ initSearch(navigate, {
     const item = await findItem('ia:' + id);
     if (item) play(item, { at: Math.max(0, t - 4), quote: q });
   },
+  // Voice: "play the one where…" starts the best match.
+  onPlay: async (it) => {
+    const item = registry.get(it.key) || it;
+    const queue = item.series ? (await seriesById(item.series))?.episodes : null;
+    play(item, { queue });
+  },
 });
+applyAppearance();
+resetTheme();
 initShortcuts();
 // Late-rendered rows (live API slots) get their ‹ › buttons as they arrive.
 new MutationObserver(() => {

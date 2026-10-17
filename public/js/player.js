@@ -7,6 +7,7 @@
 import { iaItem, iaStream, catalog, catalogDetail, nextEpisode, subtitleText, subtitleLangs, report, deadFiles, config, nasaStream, crowdMarks, postMark, trivia } from './api.js';
 import { store } from './store.js';
 import { esc, icon, fmtTime, toast, haptic, feedback } from './ui.js';
+import { reducedMotion, dataSaver } from './prefs.js';
 import { similar } from './recs.js';
 import { dragDismiss } from './gestures.js';
 import { castAvailable, castMedia, onCastEnd } from './cast.js';
@@ -17,15 +18,15 @@ let current = null;
 let cleanup = [];
 let origin = null; // { key, rect } of the element the player launched from
 
-const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
+export const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
 const SLEEP = [0, 15, 30, 45, 60, -1]; // minutes; -1 = end of title
-const LOOKS = {
+export const LOOKS = {
   original: { label: 'Original', b: 1, c: 1, s: 1 },
   restore: { label: 'Restore old print', b: 1.06, c: 1.16, s: 1.05 },
   vivid: { label: 'Vivid', b: 1.03, c: 1.1, s: 1.3 },
   night: { label: 'Night', b: 0.88, c: 0.95, s: 0.9 },
 };
-const RESTORE = { off: 'Off', deflicker: 'De-flicker', steady: 'Steady + de-flicker' };
+export const RESTORE = { off: 'Off', deflicker: 'De-flicker', steady: 'Steady + de-flicker' };
 
 const seriesKey = (item) => item.series || item.title.split(/\s[-–|:]\s|\s(?:S\d+|Season|Episode|Ep\.?)\s*\d/i)[0].trim().toLowerCase();
 const hash = (s) => [...s].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7).toString(16);
@@ -38,7 +39,7 @@ const ago = (ts) => {
  * Play an item. `from` is the element tapped (the player grows out of it like an app icon);
  * `queue` is an ordered list of episodes so "next" follows the series.
  */
-export async function play(item, { from = null, queue = null, at = null, quote = null } = {}) {
+export async function play(item, { from = null, queue = null, at = null, quote = null, mini = false } = {}) {
   feedback('play', from);
   const rect = from?.getBoundingClientRect?.();
   origin = rect && rect.width > 20 ? { key: item.key, rect } : null;
@@ -47,7 +48,7 @@ export async function play(item, { from = null, queue = null, at = null, quote =
     try {
       const { src, srt } = await nasaStream(item);
       if (!src) throw new Error('no mp4');
-      return open({ ...item, stream: src, srt }, queue, { at, quote });
+      return open({ ...item, stream: src, srt }, queue, { at, quote, mini });
     } catch {
       return toast('This NASA video is unavailable right now', 'info');
     }
@@ -69,15 +70,16 @@ export async function play(item, { from = null, queue = null, at = null, quote =
     const alt = full?.alts?.find((f) => !dead.has(item.id + '|' + f));
     if (alt) item = { ...item, file: alt };
   }
-  open(item, queue, { at, quote });
+  open(item, queue, { at, quote, mini });
 }
 
-function open(item, queue, { at = null, quote = null } = {}) {
+function open(item, queue, { at = null, quote = null, mini = false } = {}) {
   close(true, true);
   item = { ...item };
   current = item;
   const isEp = item.kind === 'episode';
   const art = item.backdrop || item.posterHd || item.poster || '';
+  const seekStep = store.pref('seekStep', 10); // Settings → Playback
   const subtitle = isEp
     ? [item.seriesTitle, item.s && item.e ? `S${item.s} · E${item.e}` : null].filter(Boolean).join(' · ')
     : [item.year, item.director?.[0]].filter(Boolean).join(' · ');
@@ -93,7 +95,10 @@ function open(item, queue, { at = null, quote = null } = {}) {
       <div class="player__launch" aria-hidden="true">${item.backdropSm || item.posterHd ? `<img src="${esc(item.backdropSm || item.posterHd)}" alt="">` : ''}</div>
       <div class="player__subs"><div class="player__cues" aria-live="off"></div><div class="player__cues player__cues--second" aria-live="off"></div></div>
       <div class="player__sleep" aria-hidden="true"></div>
-      <div class="player__curtain" aria-hidden="true"><i></i><i></i><span class="player__marquee">${esc(item.programmeLabel || item.title)}</span></div>
+      <div class="player__curtain" aria-hidden="true">
+        <i class="curtain curtain--l"></i><i class="curtain curtain--r"></i><b class="curtain__valance"></b>
+        <div class="player__marquee"><small>${esc(item.programmeLabel || 'Now showing')}</small><span>${esc(item.title)}</span>${item.year ? `<em>${esc(item.year)}</em>` : ''}</div>
+      </div>
       <div class="player__spinner"></div>
       <div class="player__tap player__tap--l">${icon('back10')}</div>
       <div class="player__tap player__tap--r">${icon('fwd10')}</div>
@@ -105,15 +110,11 @@ function open(item, queue, { at = null, quote = null } = {}) {
     <div class="player__ui">
       <div class="player__top">
         <button class="p-btn" data-act="close" aria-label="Close player">${icon('x')}</button>
+        <button class="p-btn p-btn--ghost" data-act="mini" aria-label="Keep playing while you browse" title="Mini player">${icon('down')}</button>
         <div class="player__title"><strong>${esc(item.title)}</strong><span>${esc(subtitle)}</span></div>
         <div class="spacer"></div>
         ${castAvailable() ? `<button class="p-btn p-btn--ghost" data-act="cast" aria-label="Cast to TV">${icon('cast')}</button>` : ''}
         ${'webkitShowPlaybackTargetPicker' in HTMLVideoElement.prototype ? `<button class="p-btn p-btn--ghost" data-act="airplay" aria-label="AirPlay">${icon('airplay')}</button>` : ''}
-      </div>
-      <div class="player__center">
-        <button class="p-btn" data-act="back" aria-label="Back 10 seconds">${icon('back10')}</button>
-        <button class="p-btn p-btn--big" data-act="toggle" aria-label="Play or pause">${icon('pause')}</button>
-        <button class="p-btn" data-act="fwd" aria-label="Forward 10 seconds">${icon('fwd10')}</button>
       </div>
       <div class="player__bottom">
         <button class="skip-pill glass" data-act="skip" hidden><span data-skip-label>Skip intro</span> ${icon('right')}</button>
@@ -123,11 +124,14 @@ function open(item, queue, { at = null, quote = null } = {}) {
           <div class="scrub" role="slider" aria-label="Seek" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="scrub__track"><div class="scrub__buf"></div><div class="scrub__fill"></div></div>
             <div class="scrub__ticks"></div>
-            <div class="scrub__tip"><div class="scrub__thumb"></div><span>0:00</span></div>
+            <div class="scrub__tip"><div class="scrub__thumb"></div><span>0:00</span><p class="scrub__line" hidden></p></div>
           </div>
           <span data-left>-0:00</span>
         </div>
         <div class="player__controls">
+          <button class="p-btn p-btn--ghost" data-act="back" aria-label="Back ${seekStep} seconds">${icon('back10')}</button>
+          <button class="p-btn p-btn--ghost p-btn--play" data-act="toggle" aria-label="Play or pause">${icon('pause')}</button>
+          <button class="p-btn p-btn--ghost" data-act="fwd" aria-label="Forward ${seekStep} seconds">${icon('fwd10')}</button>
           <div class="vol"><button class="p-btn p-btn--ghost" data-act="mute" aria-label="Mute">${icon('volume')}</button><input type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume"></div>
           <div class="spacer"></div>
           <button class="speed" data-act="speed" aria-label="Playback speed">1×</button>
@@ -143,6 +147,13 @@ function open(item, queue, { at = null, quote = null } = {}) {
       <div class="scenes glass" data-no-drag hidden><div class="scenes__head"><strong>Scenes</strong><button class="icon-btn" data-act="scenes" aria-label="Close scenes">${icon('x')}</button></div><div class="scenes__strip"></div></div>
       <div class="upnext glass" data-no-drag hidden></div>
       <div class="recap glass" data-no-drag hidden></div>
+    </div>
+    <div class="player__mini" data-no-drag>
+      <button class="mini__body" data-act="expand" aria-label="Back to full screen"><strong>${esc(item.title)}</strong><span>${esc(subtitle || 'Now playing')}</span></button>
+      <button class="p-btn p-btn--ghost" data-act="toggle" aria-label="Play or pause">${icon('pause')}</button>
+      <button class="p-btn p-btn--ghost" data-act="expand" aria-label="Full screen">${icon('expand')}</button>
+      <button class="p-btn p-btn--ghost" data-act="close" aria-label="Close">${icon('x')}</button>
+      <i class="mini__progress"><b></b></i>
     </div>`;
   document.body.appendChild(el);
   const root = el;
@@ -152,7 +163,7 @@ function open(item, queue, { at = null, quote = null } = {}) {
   const v = root.querySelector('video');
   const $ = (s) => root.querySelector(s);
   const scrub = $('.scrub');
-  const toggleBtn = $('[data-act="toggle"]');
+  const setToggle = (name) => root.querySelectorAll('[data-act="toggle"]').forEach((b) => (b.innerHTML = icon(name)));
   const muteBtn = $('[data-act="mute"]');
   const volInput = $('.vol input');
   const panel = $('.player__panel');
@@ -178,18 +189,22 @@ function open(item, queue, { at = null, quote = null } = {}) {
   /* ------------------------------------------------------------ smart resume */
   const saved = store.progress(item.key);
   const resumeAt = saved && saved.t / saved.d < 0.95 && saved.t > 20 ? saved.t : 0;
-  const startAt = at != null ? Math.max(0, at) : resumeAt ? Math.max(0, resumeAt - 10) : 0; // back up 10 s so you catch the thread
+  const rewind = store.pref('resumeRewind', 10); // back up a little so you catch the thread
+  const startAt = at != null ? Math.max(0, at) : resumeAt ? Math.max(0, resumeAt - rewind) : 0;
   v.addEventListener('loadedmetadata', () => {
     if (startAt) v.currentTime = startAt;
   }, { once: true });
   v.addEventListener('playing', () => {
     root.classList.add('is-started');
-    // The cinema curtain parts once the picture is actually running.
-    setTimeout(() => root.classList.add('is-curtain-open'), 120);
-  }, { once: true });
-  if (!store.pref('curtain', true) || matchMedia('(prefers-reduced-motion: reduce)').matches) root.classList.add('no-curtain');
+    // The cinema curtain parts once the picture is actually running (and again if you replay after it falls).
+    root.classList.remove('is-curtain-closing');
+    setTimeout(() => root.classList.add('is-curtain-open'), root.classList.contains('is-curtain-open') ? 0 : 160);
+  });
+  if (!store.pref('curtain', true) || reducedMotion()) root.classList.add('no-curtain');
+  root.style.setProperty('--sub-lift', { low: '0%', mid: '6%', high: '14%' }[store.pref('subPos', 'low')] || '0%');
   v.play().catch(() => root.classList.add('is-paused'));
-  if (resumeAt > 30 && at == null) showRecap();
+  const recapOn = resumeAt > 30 && at == null && store.pref('recap', true);
+  if (recapOn) showRecap();
 
   (item.source === 'nasa' ? Promise.resolve({ subtitles: [], thumbs: [], alts: [] }) : iaItem(item.id)).then((f) => {
     if (el !== root) return;
@@ -198,7 +213,7 @@ function open(item, queue, { at = null, quote = null } = {}) {
     item.subtitles = f.subtitles;
     setupScenes(f.thumbs);
     restoreSubtitles();
-    if (resumeAt > 30 && at == null) fillRecap();
+    if (recapOn) fillRecap();
     detectMarks();
     if (quote) seekToQuote();
   }).catch(() => {});
@@ -218,6 +233,7 @@ function open(item, queue, { at = null, quote = null } = {}) {
     const d = v.duration || 0;
     const pct = d ? (v.currentTime / d) * 100 : 0;
     $('.scrub__fill').style.width = pct + '%';
+    $('.mini__progress b').style.width = pct + '%';
     $('[data-cur]').textContent = fmtTime(v.currentTime);
     $('[data-left]').textContent = '-' + fmtTime(d - v.currentTime);
     scrub.setAttribute('aria-valuenow', pct.toFixed(0));
@@ -238,8 +254,8 @@ function open(item, queue, { at = null, quote = null } = {}) {
     upNextTick();
     sleepTick();
   });
-  v.addEventListener('pause', () => { lastLog = 0; root.classList.add('is-paused'); toggleBtn.innerHTML = icon('play'); store.setProgress(item, v.currentTime, v.duration); });
-  v.addEventListener('play', () => { root.classList.remove('is-paused'); toggleBtn.innerHTML = icon('pause'); poke(); });
+  v.addEventListener('pause', () => { lastLog = 0; root.classList.add('is-paused'); setToggle('play'); store.setProgress(item, v.currentTime, v.duration); });
+  v.addEventListener('play', () => { root.classList.remove('is-paused'); setToggle('pause'); poke(); });
   v.addEventListener('waiting', () => root.classList.add('is-loading'));
   v.addEventListener('playing', () => {
     root.classList.remove('is-loading', 'is-error');
@@ -248,7 +264,12 @@ function open(item, queue, { at = null, quote = null } = {}) {
   });
   v.addEventListener('canplay', () => root.classList.remove('is-loading'));
   v.addEventListener('progress', sync);
-  v.addEventListener('ended', () => { store.setProgress(item, v.duration, v.duration); showUpNext(true); });
+  v.addEventListener('ended', () => {
+    store.setProgress(item, v.duration, v.duration);
+    root.classList.remove('is-curtain-open'); // the curtain falls at the end, like a picture house
+    root.classList.add('is-curtain-closing');
+    showUpNext(true);
+  });
   v.addEventListener('volumechange', () => {
     muteBtn.innerHTML = icon(v.muted || v.volume === 0 ? 'mute' : 'volume');
     volInput.value = v.muted ? 0 : v.volume;
@@ -319,7 +340,7 @@ function open(item, queue, { at = null, quote = null } = {}) {
   function showRecap() {
     const box = $('.recap');
     box.hidden = false;
-    box.innerHTML = `<div class="recap__head"><small>Previously</small><strong>You stopped at ${fmtTime(resumeAt)}</strong><span>${esc(ago(saved.at))} · rewound 10 seconds</span></div>
+    box.innerHTML = `<div class="recap__head"><small>Previously</small><strong>You stopped at ${fmtTime(resumeAt)}</strong><span>${esc(ago(saved.at))}${rewind ? ` · rewound ${rewind} seconds` : ''}</span></div>
       <div class="recap__scenes"></div><div class="recap__lines"></div>
       <div class="recap__actions"><button class="btn btn--glass btn--sm" data-act="restart">Start over</button><button class="btn btn--primary btn--sm" data-act="recap-close">Keep watching</button></div>
       <i class="recap__timer"></i>`;
@@ -382,8 +403,15 @@ function open(item, queue, { at = null, quote = null } = {}) {
       skipKind = kind;
       skipBtn.hidden = !kind;
       if (kind) skipLabel.textContent = kind === 'intro' ? (isEp ? 'Skip intro' : 'Skip titles') : 'Skip credits';
+      // Settings → Playback: skip automatically (once per kind, so you can still go back and watch).
+      if (kind && !autoSkipped.has(kind) && store.pref(kind === 'intro' ? 'autoSkipIntro' : 'autoSkipCredits', false)) {
+        autoSkipped.add(kind);
+        flash(kind === 'intro' ? 'Skipped the opening titles' : 'Skipped the credits');
+        actions.skip();
+      }
     }
   }
+  const autoSkipped = new Set();
   // Learn from manual skips: a jump forward early on marks where the opening ends.
   let lastT = 0;
   v.addEventListener('seeking', () => {
@@ -529,11 +557,12 @@ function open(item, queue, { at = null, quote = null } = {}) {
     const speaking = i >= 0 && cues[i].end > t;
     const nextStart = cues[i + 1]?.start ?? Infinity;
     const gap = !speaking && nextStart - t > 2.5 && (i < 0 || t - cues[i].end > 0.8) && (!marks.tc || t < marks.tc);
+    const factor = store.pref('smartFactor', 1.75);
     if (gap !== inGap) {
       inGap = gap;
-      v.playbackRate = gap ? baseRate * 1.75 : baseRate;
+      v.playbackRate = gap ? Math.min(4, baseRate * factor) : baseRate;
     }
-    if (gap) timeSaved += dt * (1 - 1 / 1.75);
+    if (gap) timeSaved += dt * (1 - 1 / factor);
     smartChip.hidden = !smart;
     smartChip.classList.toggle('is-active', gap);
     $('[data-smart]').textContent = timeSaved > 5 ? `Smart Speed · saved ${fmtTime(timeSaved)}` : 'Smart Speed';
@@ -778,6 +807,8 @@ function open(item, queue, { at = null, quote = null } = {}) {
         <div class="panel__title">Playback</div>
         <label class="panel__toggle"><span>Smart Speed <small>skims long silences using the captions</small></span><input type="checkbox" ${smart ? 'checked' : ''} data-smart-toggle switch></label>
         <label class="panel__toggle"><span>Cinema curtain</span><input type="checkbox" ${store.pref('curtain', true) ? 'checked' : ''} data-curtain-toggle switch></label>
+        <label class="panel__toggle"><span>Cinema mode <small>letterboxed, dimmed edges</small></span><input type="checkbox" ${root.classList.contains('player--cinema') ? 'checked' : ''} data-cinema-toggle switch></label>
+        <label class="panel__toggle"><span>Skip titles &amp; intros automatically</span><input type="checkbox" ${store.pref('autoSkipIntro', false) ? 'checked' : ''} data-autoskip switch></label>
         <div class="panel__title">Sleep timer <small>fades picture and sound</small></div>
         <div class="panel__chips">${SLEEP.map((m) => `<button class="pill ${sleepMode === m ? 'is-active' : ''}" data-sleep="${m}">${m === 0 ? 'Off' : m === -1 ? 'End of title' : m + ' min'}</button>`).join('')}</div>
         ${isEp ? `<label class="panel__toggle"><span>Autoplay next episode</span><input type="checkbox" ${store.pref('autoplay', true) ? 'checked' : ''} data-autoplay switch></label>` : ''}`;
@@ -813,6 +844,8 @@ function open(item, queue, { at = null, quote = null } = {}) {
         if (e.target.matches('[data-autoplay]')) store.setPref('autoplay', e.target.checked);
         if (e.target.matches('[data-smart-toggle]')) setSmart(e.target.checked);
         if (e.target.matches('[data-curtain-toggle]')) store.setPref('curtain', e.target.checked);
+        if (e.target.matches('[data-cinema-toggle]') && e.target.checked !== root.classList.contains('player--cinema')) actions.cinema();
+        if (e.target.matches('[data-autoskip]')) store.setPref('autoSkipIntro', e.target.checked);
       };
     }
   }
@@ -833,8 +866,10 @@ function open(item, queue, { at = null, quote = null } = {}) {
       if (casting) return remoteToggle();
       v.paused ? v.play() : v.pause();
     },
-    back: () => seek(-10),
-    fwd: () => seek(10),
+    back: () => seek(-seekStep),
+    fwd: () => seek(seekStep),
+    mini: () => (history.state?.player ? history.back() : minimize()),
+    expand: () => expand(),
     mute: () => (v.muted = !v.muted),
     skip: () => {
       feedback('tap', skipBtn);
@@ -875,8 +910,9 @@ function open(item, queue, { at = null, quote = null } = {}) {
       if (!n) return;
       noteCredits();
       close(true, true);
-      history.replaceState({ scroll: 0 }, '', location.href); // the player's entry becomes a normal one
-      play(n, { queue });
+      const wasMini = root.classList.contains('player--mini');
+      if (history.state?.player) history.replaceState({ ...(history.state || {}), player: false, scroll: 0 }, '', location.href); // the player's entry becomes a normal one
+      play(n, { queue, mini: wasMini });
     },
     'dismiss-next': () => (upBox.hidden = true),
     pip: async () => {
@@ -914,6 +950,7 @@ function open(item, queue, { at = null, quote = null } = {}) {
     }
     const btn = e.target.closest('[data-act]');
     if (btn) return actions[btn.dataset.act]?.(btn);
+    if (root.classList.contains('player--mini')) return expand(); // tap the mini picture to go back to full screen
     if (!e.target.closest('.player__panel')) hidePanel();
     if (e.target.closest('.player__stage') && matchMedia('(hover: hover)').matches) actions.toggle();
   });
@@ -925,9 +962,10 @@ function open(item, queue, { at = null, quote = null } = {}) {
     if (e.pointerType !== 'touch') return;
     const now = Date.now();
     const x = e.clientX / innerWidth;
+    if (root.classList.contains('player--mini')) return;
     if (now - lastTap < 300 && (x < 0.34 || x > 0.66)) {
       const right = x > 0.66;
-      seek(right ? 10 : -10);
+      seek(right ? seekStep : -seekStep);
       const tap = root.querySelector(right ? '.player__tap--r' : '.player__tap--l');
       tap.classList.add('is-on');
       haptic(6);
@@ -939,8 +977,13 @@ function open(item, queue, { at = null, quote = null } = {}) {
     }
   });
 
-  // swipe down to close (mobile)
-  cleanup.push(dragDismiss(root, { onDismiss: () => close(false, true), ignore: '.scrub, .player__panel, .scenes, .upnext, .recap, input, select, .vol', scale: true }));
+  // swipe down to shrink into the mini player (mobile)
+  cleanup.push(dragDismiss(root, {
+    onDismiss: () => actions.mini(),
+    canStart: () => !root.classList.contains('player--mini'),
+    ignore: '.scrub, .player__panel, .scenes, .upnext, .recap, .player__mini, input, select, .vol',
+    scale: true,
+  }));
 
   // scrubbing with thumbnail preview
   const pctFrom = (e) => {
@@ -951,7 +994,7 @@ function open(item, queue, { at = null, quote = null } = {}) {
     const tip = $('.scrub__tip');
     const r = scrub.getBoundingClientRect();
     const t = p * (v.duration || 0);
-    const half = thumbs.length ? 84 : 24;
+    const half = Math.max(thumbs.length ? 84 : 24, lineAt(t) ? 120 : 0);
     tip.style.left = Math.min(r.width - half, Math.max(half, p * r.width)) + 'px';
     tip.querySelector('span').textContent = fmtTime(t);
     const th = thumbAt(t);
@@ -961,7 +1004,30 @@ function open(item, queue, { at = null, quote = null } = {}) {
       box.dataset.src = th.url;
       box.style.backgroundImage = `url("${th.url}")`;
     }
+    // The line being spoken at that moment, under the thumbnail.
+    const line = tip.querySelector('.scrub__line');
+    const said = lineAt(t);
+    line.hidden = !said;
+    if (said && line.textContent !== said) line.textContent = said;
+    tip.classList.toggle('has-line', !!said);
   };
+  // Captions for the scrubber: whatever is on screen, else the English captions (fetched on first touch).
+  function lineAt(t) {
+    const cues = subs.cues.length > 20 ? subs.cues : captionCues || english?.cues || null;
+    if (!cues?.length) return '';
+    let lo = 0, hi = cues.length - 1, i = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (cues[m].start <= t) { i = m; lo = m + 1; } else hi = m - 1; }
+    // Nearest line within a few seconds, so silent gaps still show what was just said.
+    const c = i >= 0 && t - cues[i].end < 4 ? cues[i] : cues[i + 1] && cues[i + 1].start - t < 2 ? cues[i + 1] : null;
+    const text = c?.text?.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() || '';
+    return text.length > 90 ? text.slice(0, 88) + '…' : text;
+  }
+  let captionsWanted = false;
+  scrub.addEventListener('pointerenter', () => {
+    if (captionsWanted || subs.cues.length > 20 || captionCues || dataSaver()) return;
+    captionsWanted = true;
+    loadEnglish().catch(() => {});
+  });
   scrub.addEventListener('pointermove', (e) => showTip(pctFrom(e)));
   scrub.addEventListener('pointerdown', (e) => {
     scrub.setPointerCapture(e.pointerId);
@@ -992,10 +1058,13 @@ function open(item, queue, { at = null, quote = null } = {}) {
 
   // keyboard
   const onKey = (e) => {
-    if ((e.target.tagName === 'INPUT' && e.target.type !== 'range') || e.target.tagName === 'SELECT') return;
+    if ((e.target.tagName === 'INPUT' && e.target.type !== 'range') || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
     const k = e.key.toLowerCase();
+    // While browsing with the mini player, only its own keys; everything else belongs to the page.
+    if (root.classList.contains('player--mini') && !['k', 'i'].includes(k)) return;
     const map = {
-      ' ': actions.toggle, k: actions.toggle, arrowleft: () => seek(-5), arrowright: () => seek(5), j: () => seek(-10), l: () => seek(10),
+      ' ': actions.toggle, k: actions.toggle, arrowleft: () => seek(-5), arrowright: () => seek(5), j: () => seek(-seekStep), l: () => seek(seekStep),
+      i: () => (root.classList.contains('player--mini') ? expand() : actions.mini()),
       f: actions.fs, m: actions.mute, p: actions.pip, t: actions.cinema, s: actions.scenes,
       c: () => (activeSub ? chooseSubs(null) : renderPanel('cc')),
       n: () => skipKind && actions.skip(),
@@ -1038,10 +1107,53 @@ function open(item, queue, { at = null, quote = null } = {}) {
     try { ms.setActionHandler('nexttrack', isEp ? async () => { await loadNext(); actions.next(); } : null); } catch {}
   }
 
-  const onPop = () => close(true);
-  history.pushState({ player: true }, '', location.href);
-  window.addEventListener('popstate', onPop, { once: true });
+  /* -------------------------------------------------------------- mini player */
+  // Back (or swipe down, or the chevron) shrinks the player into a corner so it keeps playing while you browse.
+  const onPop = () => minimize();
+  const enterFull = () => {
+    history.pushState({ player: true }, '', location.href);
+    window.addEventListener('popstate', onPop, { once: true });
+  };
+  if (mini) {
+    // Autoplay from the mini player stays mini.
+    root.classList.add('player--mini', 'no-curtain');
+    document.body.style.overflow = '';
+    document.body.classList.add('has-mini');
+  } else enterFull();
   cleanup.push(() => window.removeEventListener('popstate', onPop));
+
+  function flip(change) {
+    const first = root.getBoundingClientRect();
+    change();
+    const last = root.getBoundingClientRect();
+    if (reducedMotion() || !root.animate || !last.width) return;
+    const sx = first.width / last.width, sy = first.height / last.height;
+    root.animate(
+      [{ transformOrigin: '0 0', transform: `translate(${first.left - last.left}px, ${first.top - last.top}px) scale(${sx}, ${sy})`, borderRadius: '0px' }, { transformOrigin: '0 0', transform: 'none' }],
+      { duration: 460, easing: 'cubic-bezier(.2, .9, .2, 1)' }
+    );
+  }
+  function minimize() {
+    if (el !== root || root.classList.contains('player--mini')) return;
+    window.removeEventListener('popstate', onPop);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    hidePanel();
+    $('.scenes').hidden = true;
+    flip(() => root.classList.add('player--mini'));
+    root.classList.remove('show-ui');
+    document.body.style.overflow = '';
+    document.body.classList.add('has-mini');
+    document.dispatchEvent(new CustomEvent('player:mini'));
+  }
+  function expand() {
+    if (el !== root || !root.classList.contains('player--mini')) return;
+    flip(() => root.classList.remove('player--mini'));
+    document.body.style.overflow = 'hidden';
+    document.body.classList.remove('has-mini');
+    enterFull();
+    poke();
+  }
+  cleanup.push(() => document.body.classList.remove('has-mini'));
 
   function flash(msg) {
     const t = $('.player__toast');
@@ -1053,7 +1165,7 @@ function open(item, queue, { at = null, quote = null } = {}) {
 }
 
 /* ------------------------------------------------- app-icon launch / collapse */
-const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const reduced = reducedMotion;
 const insetFor = (r) => `inset(${r.top}px ${Math.max(0, innerWidth - r.right)}px ${Math.max(0, innerHeight - r.bottom)}px ${r.left}px round 22px)`;
 
 function launch(root) {

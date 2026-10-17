@@ -28,7 +28,7 @@ export async function tv(ctx) {
   if (location.hash === '#series') ctx.el.querySelector('#series')?.scrollIntoView({ behavior: 'smooth' });
 
   api.iaSearch({ collection: 'classic_tv', rows: 30 }).then(({ items }) => fill(ctx, '[data-slot="classic"]', `<div id="classic">${row({ title: 'Vintage Episodes', sub: 'From the Internet Archive’s classic TV collection', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') })}</div>`)).catch(() => fill(ctx, '[data-slot="classic"]', ''));
-  api.sourceItems('newsreels', { rows: 24 }).then(({ items }) => fill(ctx, '[data-slot="newsreels"]', row({ title: 'Newsreels', sub: 'What audiences saw before the feature', more: '/movies?source=newsreels', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }))).catch(() => fill(ctx, '[data-slot="newsreels"]', ''));
+  api.sourceItems('newsreels', { rows: 24 }).then(({ items }) => fill(ctx, '[data-slot="newsreels"]', row({ title: 'Newsreels', sub: 'What audiences saw before the feature · scroll the timeline', more: '/newsreels', variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }))).catch(() => fill(ctx, '[data-slot="newsreels"]', ''));
   if (location.hash === '#classic') ctx.el.querySelector('#classic')?.scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -73,8 +73,12 @@ export async function seriesView(ctx, sid) {
           <h2 class="section-title">About</h2>
           <p class="prose">${esc(sr.overview || 'Vintage episodes from the Internet Archive.')}</p>
           <h2 class="section-title" style="margin-top:36px">Episodes</h2>
-          <div class="pills" data-seasons style="margin-bottom:12px">${sr.seasons.map((x, i) => `<button class="pill ${i === seasonIdx ? 'is-active' : ''}" data-season="${i}">${esc(x.label)} <small>${x.eps.length}</small></button>`).join('')}</div>
-          <div class="episodes" data-episodes></div>
+          <div class="ep-box glass">
+            <div class="ep-box__head">
+              <div class="pills" data-seasons>${sr.seasons.map((x, i) => `<button class="pill ${i === seasonIdx ? 'is-active' : ''}" data-season="${i}">${esc(x.label)} <small>${x.eps.length}</small></button>`).join('')}</div>
+            </div>
+            <div class="episodes" data-episodes tabindex="0" aria-label="Episodes"></div>
+          </div>
           <p class="page-sub" style="font-size:13px;margin-top:20px">Episodes stream from the Internet Archive’s classic TV collection; many episodes of this series are in the U.S. public domain. Rights are as listed on each Archive item.</p>
         </div>
       </div>
@@ -99,6 +103,9 @@ export async function seriesView(ctx, sid) {
         <div class="ep__title">${esc(e.title)}</div>${e.overview ? `<p class="ep__text">${esc(e.overview)}</p>` : ''}</div>
       </button>`;
     }).join('');
+    // Open the list at the episode you're up to, scrolled inside its own box (not the page).
+    const next = box.querySelector('.is-next');
+    box.scrollTop = next ? Math.max(0, next.offsetTop - 8) : 0;
   };
   renderSeason(seasonIdx);
   ctx.el.querySelector('[data-seasons]').addEventListener('click', (e) => {

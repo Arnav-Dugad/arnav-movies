@@ -9,6 +9,8 @@ A glassy, Apple-style streaming site for **free, legal** classic cinema, classic
 - **Films:** about 1,500 public-domain films. Each is verified by Wikidata's copyright status and linked to a streamable Internet Archive file, with TMDB posters, backdrops, logo title art, trailers, cast photos and Rotten Tomatoes / Metacritic / TMDB scores.
 - **More free sources:** The Vault (the Archive's 28,000 feature films), Universal Newsreels (1929–1967), the Prelinger Archives, FedFlix government films, NASA's video library and Creative Commons open movies.
 - **Classic TV:** 26 public-domain-era series in real seasons, matched to TMDB, with progress tracked per episode.
+- **Space:** NASA's live YouTube broadcast (often the 24/7 ISS feed) and every upcoming rocket launch with a live countdown in your time zone, from Launch Library 2.
+- **Newsreel timeline:** scroll from 1929 to 1967 a year at a time. Each year shows that year's Universal Newsreels beside dated world events from Wikipedia.
 - **Player:**
   - subtitles in 40+ languages (Archive captions, OpenSubtitles and Workers AI translation), with two languages at once for learners;
   - scene thumbnails on the scrubber, with haptic ticks as you pass each scene;
@@ -20,6 +22,7 @@ A glassy, Apple-style streaming site for **free, legal** classic cinema, classic
   - old-print restoration;
   - Chromecast, AirPlay, Picture-in-Picture and lock-screen controls.
 - **Full programme:** press it on a feature and you get a newsreel from the film's era, then a cartoon, then the feature, like a 1940s picture house. Between reels and episodes there are "Did you know…" trivia cards from Wikipedia.
+- **"The one where…":** describe a plot ("the one where zombies attack a farmhouse") and search matches it against keywords from Wikipedia plots and captions. Tap the mic and say "play the one where…" to start it hands-free.
 - **Search what's said:** full-text search through about 52,000 caption windows from 2,300 films and episodes. Put a line in quotes and playback jumps to the moment it's spoken.
 - **Feel:**
   - page colours that shift to match each poster;
@@ -29,7 +32,9 @@ A glassy, Apple-style streaming site for **free, legal** classic cinema, classic
   - spatial sound cues and haptics on mobile;
   - ‹ › scroll buttons on desktop;
   - a keyboard cheat sheet (press `?`).
-- **Smart:** nightly "Arnav's Picks", "Because you watched…", "Because you liked {actor}", a taste-based "For You", moods, seasonal home pages and Surprise me. All of it is computed on the device.
+- **Mini player:** swipe down or press Back, and the film keeps playing in a corner while you browse.
+- **Settings:** 40 settings across playback, subtitles, picture, appearance, sound, browsing and privacy. They're searchable, and there's export and import.
+- **Smart:** recommendations use what films are about (TF-IDF over Wikipedia plots and dialogue) as well as genres and people. Plus nightly "Arnav's Picks", "Because you watched…", "Because you liked {actor}", a taste-based "For You", moods, seasonal home pages and Surprise me. All of it is computed on the device.
 - **Reliability:** stream failures are reported to the Worker and stored in D1. A cron job re-checks catalog files every 30 minutes, dead files are skipped automatically, and `/status` shows the dashboard.
 
 ## How Skip intro and Skip credits are found
@@ -51,6 +56,8 @@ Each film's skip points come from whichever of these signals is best, in this or
 | [TMDB](https://www.themoviedb.org) | Art, trailers, cast photos, episode guides. This product uses the TMDB API but is not endorsed or certified by TMDB. |
 | [Wikipedia](https://en.wikipedia.org) | Biographies, summaries and trivia |
 | [OpenSubtitles](https://www.opensubtitles.com) | Human-made subtitles |
+| [Launch Library 2](https://thespacedevs.com/llapi) | Upcoming rocket launches (free tier, cached by the Worker) |
+| [NASA on YouTube](https://www.youtube.com/@NASA) | NASA Live (official embed) |
 
 ## Setup
 
@@ -62,6 +69,7 @@ python scripts/build-tv.py                            # classic TV series and ep
 python scripts/build-quotes.py                        # caption search index -> .cache/quotes/*.sql
 python scripts/build-marks.py                         # intro and credits points -> .cache/marks.json
 python scripts/split_catalog.py                       # writes the lean index and per-film shards
+python scripts/build-themes.py                        # plot/dialogue themes + "the one where…" index (after split)
 npx wrangler d1 execute arnav-movies-db --local --file schema.sql
 npx wrangler dev                                      # http://localhost:8787
 ```

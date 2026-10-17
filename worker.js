@@ -7,6 +7,7 @@
 //   /api/subs/translate  Workers AI translation of caption chunks, persisted in D1
 //   /api/quote       search what's said: full-text search over film and TV captions (D1 FTS5)
 //   /api/marks       crowd-sourced skip points (end of opening titles, start of credits)
+//   /api/launches    upcoming rocket launches (Launch Library 2, trimmed and cached; its free tier allows 15 calls an hour)
 //   /api/report      playback events from the player (stream failures, recoveries)
 //   /api/health      stream-health dashboard data; /api/health/dead feeds the player
 //   scheduled()      checks every catalog file on a rolling basis and records dead streams
@@ -174,6 +175,66 @@ async function api(request, url, env, ctx) {
         out.push(r);
       }
       return json(out.slice(0, 12), 200, 86400);
+    });
+  }
+
+  if (path === 'nasa-live') {
+    // Which video NASA's official YouTube channel is streaming now (often the 24/7 ISS feed, or a launch).
+    return cached(request, ctx, 600, async () => {
+      try {
+        const r = await fetch('https://www.youtube.com/channel/UCLA_DiR1FfKNvjuUpBHmylQ/live', {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36', 'Accept-Language': 'en-US,en;q=0.8', Cookie: 'CONSENT=YES+1' },
+        });
+        const html = await r.text();
+        const id = html.match(/<link rel="canonical" href="https:\/\/www\.youtube\.com\/watch\?v=([\w-]{11})"/)?.[1] || null;
+        const title = html.match(/<meta name="title" content="([^"]*)"/)?.[1]?.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"') || null;
+        const start = html.match(/"scheduledStartTime":"(\d+)"/)?.[1];
+        // YouTube often answers Cloudflare's IPs with a bot check; don't cache a miss for long.
+        return json({ id, title, live: /"isLive":true/.test(html) && !/"isUpcoming":true/.test(html), upcoming: /"isUpcoming":true/.test(html), start: start ? +start * 1000 : null }, 200, id ? 600 : 60);
+      } catch {
+        return json({ id: null }, 200, 60);
+      }
+    });
+  }
+
+  if (path === 'launches') {
+    return cached(request, ctx, 900, async () => {
+      try {
+        const r = await fetch('https://ll.thespacedevs.com/2.3.0/launches/upcoming/?limit=14&mode=detailed&hide_recent_previous=true', {
+          headers: { 'User-Agent': 'ArnavMovies v1.0 (https://github.com/Arnav-Dugad/arnav-movies)' },
+        });
+        if (!r.ok) throw new Error('LL2 ' + r.status);
+        const d = await r.json();
+        const img = (x) => (typeof x === 'string' ? x : x?.image_url || null);
+        const video = (urls = []) => {
+          const v = [...urls].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+          return (v.find((u) => /youtube\.com|youtu\.be/.test(u.url)) || v[0])?.url || null;
+        };
+        const out = (d.results || []).map((l) => ({
+          id: l.id,
+          name: l.mission?.name || l.name,
+          full: l.name,
+          net: l.net,
+          precision: l.net_precision?.abbrev || null,
+          status: l.status?.abbrev || null,
+          statusName: l.status?.name || null,
+          provider: l.launch_service_provider?.name || null,
+          rocket: l.rocket?.configuration?.full_name || null,
+          type: l.mission?.type || null,
+          orbit: l.mission?.orbit?.name || null,
+          about: (l.mission?.description || '').slice(0, 420),
+          pad: l.pad?.name || null,
+          place: l.pad?.location?.name || null,
+          image: img(l.image),
+          live: !!l.webcast_live,
+          video: video(l.vid_urls),
+          info: l.info_urls?.[0]?.url || null,
+          probability: l.probability ?? null,
+        }));
+        return json(out, 200, 900);
+      } catch {
+        return json([], 503, 60);
+      }
     });
   }
 

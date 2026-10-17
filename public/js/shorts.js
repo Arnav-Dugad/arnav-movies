@@ -22,7 +22,8 @@ export async function shorts(ctx) {
   let shown = 0;
   let muted = store.pref('shortsMuted', true);
 
-  ctx.el.innerHTML = `<div class="shorts" role="feed" aria-label="Shorts">
+  ctx.el.innerHTML = `<a class="shorts__close glass" href="/" data-shorts-close aria-label="Close Shorts" title="Close (Esc)">${icon('x')}</a>
+  <div class="shorts" role="feed" aria-label="Shorts">
     <div class="shorts__hint glass" ${store.pref('shortsHint', false) ? 'hidden' : ''}>${icon('down')} Swipe for the next clip</div>
   </div>`;
   document.body.classList.add('is-shorts');
@@ -150,8 +151,20 @@ export async function shorts(ctx) {
     }
   });
 
+  // Close: back to wherever you came from (or Home if Shorts was the first page).
+  const closeBtn = ctx.el.querySelector('[data-shorts-close]');
+  const leave = (e) => {
+    if (history.state?.idx > 0) {
+      e?.preventDefault();
+      e?.stopPropagation();
+      history.back();
+    } else if (!e) closeBtn.click();
+  };
+  closeBtn.addEventListener('click', leave);
+
   const onKey = (e) => {
-    if (!['ArrowDown', 'ArrowUp', 'j', 'k'].includes(e.key) || document.querySelector('.player, .palette.is-open')) return;
+    if (e.key === 'Escape' && !document.querySelector('.player:not(.player--mini), .palette.is-open, .modal')) return leave();
+    if (!['ArrowDown', 'ArrowUp', 'j', 'k'].includes(e.key) || document.querySelector('.player:not(.player--mini), .palette.is-open')) return;
     e.preventDefault();
     feed.scrollBy({ top: (e.key === 'ArrowDown' || e.key === 'j' ? 1 : -1) * feed.clientHeight, behavior: 'smooth' });
   };

@@ -40,13 +40,14 @@ export function cue(name, el) {
   if (out.pan) out.pan.value = pan * 0.85;
   out.connect(ac.destination);
   const now = ac.currentTime;
+  const level = { soft: 0.45, normal: 1, loud: 1.9 }[store.pref('soundLevel', 'normal')] || 1;
   for (const [f, at, dur] of CUES[name] || CUES.tap) {
     const o = ac.createOscillator();
     const g = ac.createGain();
     o.type = 'sine';
     o.frequency.setValueAtTime(f, now + at);
     g.gain.setValueAtTime(0, now + at);
-    g.gain.linearRampToValueAtTime(0.06, now + at + 0.008);
+    g.gain.linearRampToValueAtTime(0.06 * level, now + at + 0.008);
     g.gain.exponentialRampToValueAtTime(0.0001, now + at + dur);
     o.connect(g).connect(out);
     o.start(now + at);

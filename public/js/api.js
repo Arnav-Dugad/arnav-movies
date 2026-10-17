@@ -6,6 +6,8 @@
 //   Wikidata/Wikipedia  people pages and summaries
 // To add a source, write a provider that returns the same item shape (see the `to*` mappers).
 
+import { store } from './store.js';
+
 const memory = new Map();
 const inflight = new Map();
 
@@ -74,8 +76,32 @@ export const countryName = (code) => {
 /* ------------------------------------------------------------------ catalog */
 let catalogPromise;
 export function catalog() {
-  catalogPromise ??= getJSON('/data/catalog.json?v=2', { ttl: Infinity, persist: false }).then((d) => d.films.map(toItemFromCatalog));
+  catalogPromise ??= Promise.all([
+    getJSON('/data/catalog.json?v=2', { ttl: Infinity, persist: false }),
+    getJSON('/data/text.json?v=1', { ttl: Infinity, persist: false }).catch(() => null),
+  ]).then(([d, text]) => {
+    const films = d.films.map(toItemFromCatalog);
+    // Plot and dialogue model (scripts/build-themes.py): neighbours by what films are about, plus themes.
+    if (text && text.n === films.length && text.first === d.films[0]?.id) {
+      films.forEach((f, i) => {
+        const nb = text.nb[i] || [];
+        f.tx = new Map();
+        for (let k = 0; k < nb.length; k += 2) f.tx.set(films[nb[k]]?.key, nb[k + 1] / 100);
+        f.themes = text.th[i] || [];
+      });
+    }
+    return films;
+  });
   return catalogPromise;
+}
+
+/** Plot keywords for "the one where…" search, aligned with the catalog (loaded on first search). */
+let plotsPromise;
+export function plotIndex() {
+  plotsPromise ??= Promise.all([catalog(), getJSON('/data/plots.json?v=1', { ttl: Infinity, persist: false })])
+    .then(([films, p]) => (p.n === films.length && films[0]?.id === p.first ? films.map((f, i) => ({ film: f, kw: ` ${p.kw[i] || ''} ` })) : []))
+    .catch(() => []);
+  return plotsPromise;
 }
 
 function toItemFromCatalog(f) {
@@ -385,6 +411,7 @@ export async function resolveTitle(id) {
 
 /* ------------------------------------------------------- stream health */
 export function report(ev, item, extra = {}) {
+  if (!store.pref('reports', true)) return; // Settings → Privacy
   try {
     const body = JSON.stringify({ ev, id: item.id, file: item.file, ...extra });
     if (!navigator.sendBeacon?.('/api/report', new Blob([body], { type: 'application/json' }))) {
@@ -562,6 +589,96 @@ export async function newsreelFor(year) {
   }
   return null;
 }
+
+/* ------------------------------------------------------------ space */
+// Launch Library's free tier allows 15 calls an hour per IP. Cloudflare's shared IPs run out, so each
+// viewer's browser asks directly (with CORS, cached 15 minutes) and the Worker is only a fallback.
+const trimLaunch = (l) => {
+  const v = [...(l.vid_urls || [])].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+  return {
+    id: l.id,
+    name: l.mission?.name || l.name,
+    full: l.name,
+    net: l.net,
+    precision: l.net_precision?.abbrev || null,
+    status: l.status?.abbrev || null,
+    statusName: l.status?.name || null,
+    provider: l.launch_service_provider?.name || null,
+    rocket: l.rocket?.configuration?.full_name || null,
+    type: l.mission?.type || null,
+    orbit: l.mission?.orbit?.name || null,
+    about: (l.mission?.description || '').slice(0, 420),
+    pad: l.pad?.name || null,
+    place: l.pad?.location?.name || null,
+    image: typeof l.image === 'string' ? l.image : l.image?.image_url || null,
+    live: !!l.webcast_live,
+    video: (v.find((u) => /youtube\.com|youtu\.be/.test(u.url)) || v[0])?.url || null,
+    info: l.info_urls?.[0]?.url || null,
+  };
+};
+export async function launches() {
+  try {
+    const d = await getJSON('https://ll.thespacedevs.com/2.3.0/launches/upcoming/?limit=14&mode=detailed&hide_recent_previous=true', { ttl: 15 * 60e3 });
+    if (d?.results?.length) return d.results.map(trimLaunch);
+  } catch {}
+  return getJSON('/api/launches', { ttl: 10 * 60e3, persist: false });
+}
+
+// NASA's long-running 24/7 streams, used when the live lookup can't reach YouTube.
+const NASA_STREAMS = ['M3HKLzjvKPc'];
+/** What NASA's official YouTube channel is streaming: { id, title, live, upcoming, start }. */
+export async function nasaLive() {
+  const w = await getJSON('/api/nasa-live', { ttl: 5 * 60e3, persist: false }).catch(() => null);
+  if (w?.id) return w;
+  for (const id of NASA_STREAMS) {
+    // oEmbed answers only for videos that exist and can be embedded.
+    const o = await getJSON(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent('https://www.youtube.com/watch?v=' + id)}`, { ttl: 30 * 60e3 }).catch(() => null);
+    if (o?.title) return { id, title: o.title, live: true, upcoming: false, start: null };
+  }
+  return { id: null };
+}
+export const youtubeEmbed = (id) => `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1`;
+
+/* --------------------------------------------------------- newsreel timeline */
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DATE_LINE = new RegExp(`^(${MONTHS.join('|')})(?: (\\d{1,2})(?:[–-]\\d{1,2})?)?\\s*(?:[–—-]\\s*(.*))?$`);
+
+/** "What happened that year": dated events from the Wikipedia article for the year, spread across the months. */
+export async function yearEvents(year) {
+  const d = await getJSON(`https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&exsectionformat=wiki&redirects=1&format=json&origin=*&titles=${year}`, { ttl: 30 * 86400e3 });
+  const text = Object.values(d?.query?.pages || {})[0]?.extract || '';
+  const start = text.indexOf('== Events ==');
+  if (start < 0) return [];
+  const end = text.indexOf('\n== ', start + 12);
+  const lines = text.slice(start, end > 0 ? end : undefined).split('\n').map((l) => l.trim()).filter(Boolean);
+  const events = [];
+  let date = null;
+  for (const line of lines) {
+    if (line.startsWith('=')) continue;
+    const m = line.match(DATE_LINE);
+    if (m) {
+      date = { month: MONTHS.indexOf(m[1]), day: m[2] ? +m[2] : null };
+      const rest = (m[3] || '').trim();
+      if (rest.length > 30 && !rest.endsWith(':')) events.push({ ...date, text: rest });
+      else date.label = rest.replace(/:$/, '');
+    } else if (date && line.length > 30 && !events.some((e) => e.month === date.month && e.day === date.day)) {
+      events.push({ month: date.month, day: date.day, text: (date.label ? date.label + ': ' : '') + line });
+    }
+  }
+  // Up to two per month, so the whole year shows.
+  const byMonth = new Map();
+  events.forEach((e) => byMonth.set(e.month, [...(byMonth.get(e.month) || []), e]));
+  const picked = [];
+  for (let round = 0; round < 2; round++) for (const [, list] of [...byMonth].sort((a, b) => a[0] - b[0])) list[round] && picked.push(list[round]);
+  return picked
+    .sort((a, b) => a.month - b.month || (a.day || 0) - (b.day || 0))
+    .slice(0, 16)
+    .map((e) => ({ ...e, when: MONTHS[e.month].slice(0, 3) + (e.day ? ' ' + e.day : ''), text: e.text.replace(/\s*\[\d+\]/g, '').slice(0, 240) }));
+}
+
+/** Universal Newsreels released in a given year. */
+export const newsreelsOf = (year, rows = 18) =>
+  iaSearch({ collection: 'universal_newsreels', filter: `year:${year}`, sort: 'downloads desc', rows }).then((r) => r.items);
 
 /* --------------------------------------------------------- search what's said */
 export const quoteSearch = (q) => getJSON(`/api/quote?v=2&q=${encodeURIComponent(q)}`, { ttl: 3600e3 }).catch(() => []);

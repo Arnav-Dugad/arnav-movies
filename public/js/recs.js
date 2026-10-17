@@ -21,6 +21,9 @@ export function similar(film, films, n = 14) {
       s += (f.cast || []).slice(0, 5).filter((c) => cast.has(c)).length * 3;
       if (film.year && f.year) s += Math.max(0, 2 - Math.abs(film.year - f.year) / 10);
       if (!!(film.tags || []).includes('short') !== !!(f.tags || []).includes('short')) s -= 4;
+      // What the films are actually about: plot and dialogue similarity (scripts/build-themes.py).
+      s += (film.tx?.get(f.key) || f.tx?.get(film.key) || 0) * 30;
+      s += (f.themes || []).filter((t) => film.themes?.includes(t)).length * 2;
       return [f, s + quality(f) * 0.25];
     })
     .filter(([, s]) => s > 3)
@@ -31,13 +34,24 @@ export function similar(film, films, n = 14) {
 
 const seenKeys = () => new Set([...store.list().map((x) => x.key), ...Object.keys(store.allProgress()), ...store.rejected()]);
 
+/** Themes (from plots and dialogue) of the films you finished or saved, weighted like genres. */
+export function themeTaste(films) {
+  const byKey = new Map(films.map((f) => [f.key, f]));
+  const w = {};
+  const add = (f, n) => (f?.themes || []).forEach((t) => (w[t] = (w[t] || 0) + n));
+  Object.values(store.allProgress()).forEach((p) => p.t / p.d > 0.3 && add(byKey.get(p.item.key), p.t / p.d > 0.9 ? 2 : 1));
+  store.list().forEach((x) => add(byKey.get(x.key), 1.5));
+  return w;
+}
+
 export function recommend(films, n = 16) {
   const taste = store.taste();
   if (!Object.keys(taste).length) return null;
   const seen = seenKeys();
+  const themes = themeTaste(films);
   return films
     .filter((f) => !seen.has(f.key))
-    .map((f) => [f, [...f.genres, ...f.tags].reduce((s, g) => s + (taste[g] || 0), 0) + quality(f)])
+    .map((f) => [f, [...f.genres, ...f.tags].reduce((s, g) => s + (taste[g] || 0), 0) + (f.themes || []).reduce((s, t) => s + (themes[t] || 0) * 1.5, 0) + quality(f)])
     .sort((a, b) => b[1] - a[1])
     .slice(0, n)
     .map(([f]) => f);

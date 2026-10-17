@@ -1,5 +1,6 @@
 // Desktop hover cards: linger on a poster and it expands into a glass card with a muted trailer
 // (or a preview clip, or a Ken Burns slideshow), scores, a blurb and quick actions.
+import { previewsOn } from './prefs.js';
 import { catalogDetail, iaStream, iaItem } from './api.js';
 import { store } from './store.js';
 import { esc, icon, ratingBadges, metaLine, ytEmbed, kenBurns, toast, haptic } from './ui.js';
@@ -112,6 +113,7 @@ async function show(c) {
   // Motion after a beat: trailer → preview clip → slideshow.
   mediaTimer = setTimeout(async () => {
     if (hc !== mine) return;
+    if (!previewsOn()) return; // Settings → Browsing (or data saver)
     const layer = mine.querySelector('.hcard__layer');
     const mute = mine.querySelector('[data-hc-mute]');
     if (item.trailer) {

@@ -1,8 +1,8 @@
 // Offline shell + fast repeat visits. Video streams and API calls are never cached here.
-const VERSION = 'arnav-v4';
+const VERSION = 'arnav-v5';
 const SHELL = [
   '/', '/styles.css', '/data/catalog.json?v=2', '/icon.svg', '/manifest.webmanifest',
-  ...['app', 'api', 'store', 'ui', 'views', 'tv', 'people', 'status', 'player', 'search', 'recs', 'gestures', 'cast', 'subs', 'hovercard', 'shorts', 'seasons', 'theme', 'audio', 'shortcuts'].map((m) => `/js/${m}.js`),
+  ...['app', 'api', 'store', 'ui', 'views', 'tv', 'people', 'status', 'player', 'search', 'recs', 'gestures', 'cast', 'subs', 'hovercard', 'shorts', 'seasons', 'theme', 'audio', 'shortcuts', 'prefs', 'space', 'timeline', 'settings'].map((m) => `/js/${m}.js`),
 ];
 
 self.addEventListener('install', (e) => {

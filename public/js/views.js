@@ -9,8 +9,8 @@ import {
 import { similar, recommend, becauseYouWatched, becauseYouLikedActor, nightlyPicks, dailyShuffle, hoursUntilMidnight } from './recs.js';
 import { currentSeason, applySeason, daysUntil, particles } from './seasons.js';
 import { applyTheme } from './theme.js';
-import { soundsOn, setSounds } from './audio.js';
-import { show as showShortcuts } from './shortcuts.js';
+import { visible, heroTrailersOn, reducedMotion } from './prefs.js';
+import { openSearch } from './search.js';
 
 /* Item registry so global click handlers (play, My List) can find the full item for a card. */
 export const registry = new Map();
@@ -119,12 +119,13 @@ const titleArt = (item, cls) =>
 
 /* ======================================================================= HOME */
 export async function home(ctx) {
-  const films = reg(await api.catalog());
+  reg(await api.catalog());
+  const films = visible(await api.catalog()); // Settings → Browsing: hidden categories, finished films
   const { greet, boost } = timeContext();
   const features = films.filter((f) => !f.tags.includes('short'));
   const score = (f) => (f.backdrop && f.logo ? 2 : 0) + boost.filter((t) => f.tags.includes(t)).length;
   const ranked = dailyShuffle(features.slice(0, 120), 'hero').sort((a, b) => score(b) - score(a));
-  const season = currentSeason();
+  const season = store.pref('seasonal', true) ? currentSeason() : null;
   applySeason(season);
   ctx.onLeave(() => applySeason(null));
   const seasonal = season ? films.filter((f) => !f.tags.includes('short') && season.tags.some((t) => f.tags.includes(t))) : [];
@@ -183,12 +184,12 @@ export async function home(ctx) {
   wireHero(ctx);
   if (season) ctx.onLeave(particles(ctx.el.querySelector('.hero'), season.particles));
 
-  const sourceRow = (slot, key, title, sub, opts = {}) =>
+  const sourceRow = (slot, key, title, sub, { more, ...opts } = {}) =>
     api.sourceItems(key, { rows: 24, ...opts }).then(({ items }) =>
-      fill(ctx, `[data-slot="${slot}"]`, items.length ? row({ title, sub, more: `/movies?source=${key}`, variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }) : '')
+      fill(ctx, `[data-slot="${slot}"]`, items.length ? row({ title, sub, more: more || `/movies?source=${key}`, variant: 'wide', cards: reg(items).map((f) => wideCard(f)).join('') }) : '')
     ).catch(() => fill(ctx, `[data-slot="${slot}"]`, ''));
-  sourceRow('newsreels', 'newsreels', 'Newsreels', 'What audiences saw before the feature');
-  sourceRow('nasa', 'nasa', 'From NASA', 'Missions, launches and the view from orbit', { filter: 'apollo moon landing' });
+  sourceRow('newsreels', 'newsreels', 'Newsreels', 'What audiences saw before the feature · scroll the timeline', { more: '/newsreels' });
+  sourceRow('nasa', 'nasa', 'From NASA', 'Missions, NASA Live and launch countdowns', { filter: 'apollo moon landing', more: '/space' });
   sourceRow('cc', 'cc', 'Creative Commons', 'Open movies, free to watch and share');
   sourceRow('gov', 'government', 'Government Films', 'Made by the U.S. government, owned by everyone');
   sourceRow('prelinger', 'prelinger', 'Prelinger Archives', 'Ads, educational and industrial films');
@@ -269,7 +270,7 @@ function wireHero(ctx) {
   const startTrailer = () => {
     const slide = slides[i];
     const key = slide.dataset.trailer;
-    if (!key || !ctx.alive() || document.querySelector('.player, .modal')) return;
+    if (!key || !ctx.alive() || document.querySelector('.player:not(.player--mini), .modal') || !heroTrailersOn()) return;
     const box = slide.querySelector('.hero__video');
     muted = true;
     box.innerHTML = `<iframe src="${esc(ytEmbed(key, { muted: true, controls: false }))}&enablejsapi=1" allow="autoplay; encrypted-media" tabindex="-1" title=""></iframe>`;
@@ -354,7 +355,7 @@ function wireHero(ctx) {
 
 /** Depth: backdrop, ambient light and content drift at different rates with the pointer and the scroll. */
 function heroParallax(heroEl) {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return () => {};
+  if (reducedMotion() || !store.pref('parallax', true)) return () => {};
   let px = 0, py = 0, sy = 0, raf = 0;
   const paint = () => {
     raf = 0;
@@ -401,7 +402,8 @@ const sortCurated = (list, sort) => {
 const NASA_TOPICS = ['Apollo', 'Moon landing', 'Mars', 'Hubble', 'Space Station', 'Space Shuttle', 'Earth from space', 'Artemis', 'Rockets', 'Solar system'];
 
 export async function movies(ctx) {
-  const films = reg(await api.catalog());
+  reg(await api.catalog());
+  const films = visible(await api.catalog());
   const params = new URLSearchParams(location.search);
   const source = api.SOURCES[params.get('source')] ? params.get('source') : params.get('tab') === 'vault' ? 'vault' : 'curated';
   const state = {
@@ -547,7 +549,8 @@ export async function movies(ctx) {
 export async function collection(ctx, tag) {
   const c = COLLECTIONS[tag];
   if (!c) return notFound(ctx);
-  const films = reg(await api.catalog());
+  reg(await api.catalog());
+  const films = visible(await api.catalog());
   const list = byTag(films, tag);
   ctx.el.innerHTML = `<div class="view"><div class="container">
     <header class="page-head"><div><div class="eyebrow">Collection</div><h1 class="page-title">${esc(c.title)}</h1><p class="page-sub">${esc(c.sub)}. ${list.length ? `${list.length} curated film${list.length > 1 ? 's' : ''}.` : ''}</p></div>
@@ -647,6 +650,7 @@ export async function title(ctx, id) {
         <div>
           <h2 class="section-title">About</h2>
           <p class="prose">${esc(item.overview || 'No description available yet.')}</p>
+          ${item.themes?.length ? `<div class="themes" aria-label="Themes">${item.themes.map((t) => `<button class="theme-chip" data-theme-q="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
           ${item.people?.length ? `<h2 class="section-title" style="margin-top:36px">Cast</h2>${castRow(item.people)}` : ''}
         </div>
         <aside class="panel glass">
@@ -662,6 +666,12 @@ export async function title(ctx, id) {
     </div>
     <div class="rows" style="margin-top:56px">
       <div data-slot="similar">${skeletonRow('More Like This')}</div>
+      ${(() => {
+        // "More about vampires": other films whose plots share this one's leading theme.
+        const t = item.themes?.[0];
+        const about = t ? visible(films).filter((f) => f.key !== item.key && f.themes?.includes(t)).slice(0, 18) : [];
+        return about.length >= 3 ? row({ title: `Also about “${t}”`, sub: 'Films whose plots and dialogue share this theme', cards: reg(about).map((f) => posterCard(f)).join('') }) : '';
+      })()}
       ${sameDirector.length >= 2 ? row({ title: `More from ${item.director[0]}`, cards: reg(sameDirector).slice(0, 20).map((f) => posterCard(f)).join('') }) : ''}
     </div>
     ${footer()}
@@ -670,6 +680,10 @@ export async function title(ctx, id) {
   setAmbient(item.poster);
   ctx.onLeave(applyTheme(item.poster));
   ctx.el.querySelector('[data-programme]')?.addEventListener('click', (e) => playProgramme(ctx, item, e.currentTarget));
+  ctx.el.querySelector('.themes')?.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-theme-q]');
+    if (b) openSearch(b.dataset.themeQ);
+  });
   // No trailer? Let the backdrop breathe with a slow Ken Burns slideshow of stills.
   if (!item.trailer && item.slides?.length > 1) {
     const bd = ctx.el.querySelector('.detail__backdrop');
@@ -687,7 +701,7 @@ export async function title(ctx, id) {
   });
 
   if (curated) {
-    const sim = reg(similar(item, films, 18));
+    const sim = reg(visible(similar(item, films, 24)).slice(0, 18));
     fill(ctx, '[data-slot="similar"]', sim.length ? row({ title: 'More Like This', cards: sim.map((f) => posterCard(f)).join('') }) : '');
   } else {
     const g = item.genres?.[0];
@@ -761,25 +775,14 @@ export async function myList(ctx) {
         : emptyState({ iconName: 'bookmark', title: 'Nothing saved yet', text: 'Tap + on any film, show or anime to keep it here for later.', action: '<a class="btn btn--primary" href="/movies">Browse movies</a>' })}
     </div>
     <div class="container" style="margin-top:48px">
-      <h2 class="section-title">Settings</h2>
-      <div class="settings glass">
-        <label class="setting"><span><strong>Sound cues</strong><small>Soft taps, panned to where you touch</small></span><input type="checkbox" data-pref="uiSounds" ${soundsOn() ? 'checked' : ''} switch></label>
-        <label class="setting"><span><strong>Cinema curtain</strong><small>Curtains part when playback starts</small></span><input type="checkbox" data-pref="curtain" ${store.pref('curtain', true) ? 'checked' : ''} switch></label>
-        <label class="setting"><span><strong>Smart Speed</strong><small>Skims long silences between lines</small></span><input type="checkbox" data-pref="smartSpeed" ${store.pref('smartSpeed', false) ? 'checked' : ''} switch></label>
-        <label class="setting"><span><strong>Autoplay next</strong><small>Episodes and programme reels</small></span><input type="checkbox" data-pref="autoplay" ${store.pref('autoplay', true) ? 'checked' : ''} switch></label>
-        <button class="setting setting--btn" data-shortcuts><span><strong>Keyboard shortcuts</strong><small>Press ? anywhere</small></span>${icon('right')}</button>
-      </div>
+      <a class="settings-card glass" href="/settings">
+        <span class="settings-card__icon">${icon('gear')}</span>
+        <span><strong>Settings</strong><small>Playback, subtitles, picture, appearance, sound, browsing and your data</small></span>
+        ${icon('right')}
+      </a>
     </div>
   </div>${footer()}</div>`;
   wireRows(ctx.el);
-  ctx.el.querySelector('.settings').addEventListener('change', (e) => {
-    const k = e.target.dataset.pref;
-    if (!k) return;
-    if (k === 'uiSounds') setSounds(e.target.checked);
-    else store.setPref(k, e.target.checked);
-    toast(`${e.target.closest('.setting').querySelector('strong').textContent} ${e.target.checked ? 'on' : 'off'}`);
-  });
-  ctx.el.querySelector('[data-shortcuts]').addEventListener('click', () => showShortcuts());
 }
 
 /* ============================================================ NASA WATCH PAGE */

@@ -178,4 +178,36 @@ export const store = {
     state.prefs[k] = v;
     save();
   },
+
+  /* ---- Settings → Privacy & data */
+  clearHistory() {
+    state.progress = {};
+    state.days = {};
+    state.genres = {};
+    save();
+  },
+  clearList() {
+    state.list = [];
+    save();
+  },
+  clearDismissed() {
+    state.nope = {};
+    save();
+  },
+  resetPrefs() {
+    state.prefs = {};
+    save();
+  },
+  counts: () => ({ list: state.list.length, progress: Object.keys(state.progress).length, nope: Object.keys(state.nope).length, prefs: Object.keys(state.prefs).length }),
+  bytes: () => {
+    try { return (localStorage.getItem(KEY) || '').length; } catch { return 0; }
+  },
+  exportData: () => JSON.stringify({ app: 'arnav-movies', version: 1, exported: new Date().toISOString(), data: state }, null, 2),
+  importData(text) {
+    const parsed = JSON.parse(text);
+    const data = parsed?.data || parsed;
+    if (!data || typeof data !== 'object' || !('list' in data || 'progress' in data || 'prefs' in data)) throw new Error('Not an Arnav Movies backup');
+    state = { ...blank(), ...data };
+    save();
+  },
 };

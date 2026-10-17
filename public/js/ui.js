@@ -2,6 +2,7 @@
 import { store } from './store.js';
 import { iaStream, iaItem } from './api.js';
 import { cue } from './audio.js';
+import { previewsOn, reducedMotion } from './prefs.js';
 
 export const esc = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -48,6 +49,7 @@ export const icon = (name, cls = '') =>
   `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ''}</svg>`;
 
 export const haptic = (pattern = 8) => {
+  if (!store.pref('haptics', true)) return;
   try { navigator.vibrate?.(pattern); } catch {}
 };
 
@@ -141,8 +143,8 @@ export function rankCard(item, n) {
 
 export function row({ title, sub = '', more = '', cards, variant = '' }) {
   return `<section class="row ${variant ? 'row--' + variant : ''}">
-    <div class="container"><header class="row__head"><h2 class="row__title">${esc(title)}${sub ? ` <small>${esc(sub)}</small>` : ''}</h2>
-    ${more ? `<a class="row__more" href="${esc(more)}">See all ${icon('right')}</a>` : ''}</header></div>
+    <div class="container"><header class="row__head"><h2 class="row__title">${esc(title)}</h2>
+    ${more ? `<a class="row__more" href="${esc(more)}">See all ${icon('right')}</a>` : ''}${sub ? `<p class="row__sub">${esc(sub)}</p>` : ''}</header></div>
     <div class="row__wrap">
       <button class="row__nav row__nav--prev" aria-label="Scroll left" disabled><span class="glass">${icon('left')}</span></button>
       <div class="row__track">${cards}</div>
@@ -207,6 +209,8 @@ export function wireScrollers(root = document) {
       wrap.classList.toggle('is-overflow', over);
       prev.disabled = strip.scrollLeft < 6;
       next.disabled = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 6;
+      wrap.classList.toggle('at-start', prev.disabled); // fade only the edges that hide more
+      wrap.classList.toggle('at-end', next.disabled);
     };
     const go = (d) => strip.scrollBy({ left: d * Math.max(200, strip.clientWidth * 0.7), behavior: 'smooth' });
     prev.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); go(-1); });
@@ -253,7 +257,7 @@ export function initPreviews() {
   };
   document.addEventListener('pointerover', (e) => {
     const card = e.target.closest?.('.card[data-pv]');
-    if (!card || active?.card === card) return;
+    if (!card || active?.card === card || !previewsOn()) return;
     stop();
     timer = setTimeout(() => start(card), 850);
   });
@@ -268,7 +272,7 @@ export function initPreviews() {
 /** Cross-fading slow-pan slideshow. Returns a stop function. */
 export function kenBurns(container, urls, { interval = 6500 } = {}) {
   const list = [...new Set((urls || []).filter(Boolean))].slice(0, 8);
-  if (list.length < 2 || matchMedia('(prefers-reduced-motion: reduce)').matches) return () => {};
+  if (list.length < 2 || reducedMotion() || !store.pref('kenBurns', true)) return () => {};
   const drift = () => `--kx:${(Math.random() * 6 - 3).toFixed(2)}%;--ky:${(Math.random() * 4 - 2).toFixed(2)}%;--ko:${Math.random() > 0.5 ? 'left' : 'right'} center`;
   container.classList.add('kb');
   container.innerHTML = list.map((u, i) => `<img class="kb__img ${i === 0 ? 'is-on' : ''} ${u.startsWith('/data/stills') ? 'kb__img--soft' : ''}" src="${esc(u)}" alt="" style="${drift()}" ${i ? 'loading="lazy"' : ''}>`).join('');
